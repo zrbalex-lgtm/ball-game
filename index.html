@@ -9,7 +9,7 @@
 <meta name="apple-mobile-web-app-title" content="Шарик">
 <title>Шарик</title>
 <style>
-  html, body { margin: 0; height: 100%; overflow: hidden; background: #1b1f2a; touch-action: none;
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0d0f1e; touch-action: none;
     -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
     font-family: -apple-system, system-ui, sans-serif; color: #fff; }
   canvas { display: block; }
@@ -20,27 +20,32 @@
   button { font: inherit; font-size: 20px; padding: 12px 22px; border: 0; border-radius: 14px;
     background: #ffb020; color: #222; font-weight: 700; }
   .small { font-size: 15px; padding: 8px 12px; background: rgba(255,255,255,.85); }
+  .ghost { font-size: 15px; padding: 8px 14px; background: transparent; color: #fff; border: 1px solid rgba(255,255,255,.5); }
+  #minimap { position: fixed; right: 16px; top: calc(env(safe-area-inset-top, 0px) + 64px);
+    border-radius: 10px; background: rgba(10,12,24,.55); pointer-events: none; }
   #overlay { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center;
-    justify-content: center; gap: 18px; background: rgba(10,12,20,.78); text-align: center; padding: 24px; }
+    justify-content: center; gap: 18px; background: rgba(10,12,20,.8); text-align: center; padding: 24px; }
   #overlay h1 { margin: 0; font-size: 48px; }
-  #overlay p { margin: 0; max-width: 440px; opacity: .9; line-height: 1.45; font-size: 17px; }
-  #msg { position: fixed; top: 38%; left: 0; right: 0; text-align: center; font-size: 44px; font-weight: 800;
-    text-shadow: 0 2px 8px #000; pointer-events: none; opacity: 0; transition: opacity .25s; }
+  #overlay p { margin: 0; max-width: 460px; opacity: .9; line-height: 1.45; font-size: 17px; }
+  #msg { position: fixed; top: 36%; left: 16px; right: 16px; text-align: center; font-size: clamp(26px, 5vw, 44px);
+    font-weight: 800; text-shadow: 0 2px 8px #000; pointer-events: none; opacity: 0; transition: opacity .25s; }
 </style>
 </head>
 <body>
 <div id="hud">
-  <span id="coins">🪙 0/0</span>
+  <span id="info">Ур. 1 · 🪙 0/0</span>
   <span>
     <button class="small" id="calibBtn">⟳ Калибровка</button>
     <button class="small" id="restartBtn">↺ Заново</button>
   </span>
 </div>
+<canvas id="minimap"></canvas>
 <div id="msg"></div>
 <div id="overlay">
   <h1>Шарик</h1>
-  <p id="overlayText">Наклоняй iPad, чтобы катить шарик. Собирай монеты, не падай в лаву, синие площадки подбрасывают вверх. Цель — зелёный финиш.<br><br>Держи iPad так, как удобно играть, и нажми «Старт» — это положение станет нулевым.</p>
+  <p>Наклоняй iPad, чтобы катить шарик по лабиринту над лавой. Собери <b>все</b> монеты — они спрятаны в тупиках — и доберись до клетчатого финиша. Синие площадки со стрелками перебрасывают через пропасть.<br><br>Держи iPad так, как удобно играть, и нажми «Старт».</p>
   <button id="startBtn">Старт</button>
+  <button class="ghost" id="resetProgressBtn" style="display:none">Начать с 1 уровня</button>
 </div>
 
 <script type="importmap">
@@ -58,44 +63,234 @@ const GROUND_DAMPING = 1.3;  // rolling friction on the ground
 const AIR_CONTROL = 0.35;    // fraction of control while airborne
 const MAX_TILT_DEG = 22;     // tilt angle treated as "full"
 const DEADZONE_DEG = 1.5;
-const JUMP_SPEED = 15;       // vertical speed given by a jump pad
+const JUMP_V = 10;           // vertical speed from a jump pad
+const JUMP_H = 6.5;          // horizontal speed from a jump pad (towards the gap)
 const KILL_Y = -10;          // safety net if the ball falls out of the world
 const SUBSTEPS = 4;
 
-// ---------- Level data ----------
-// Box: p = center [x,y,z], s = size [w,h,d], t = type (floor | jump | lava | finish)
-// Forward is -Z, up is +Y.
-const LEVEL = {
-  boxes: [
-    { p: [0, -0.5, 0],       s: [6, 1, 6],     t: 'floor' },  // start
-    { p: [0, -0.5, -9],      s: [2, 1, 12],    t: 'floor' },  // narrow path
-    { p: [0, -0.5, -18],     s: [8, 1, 6],     t: 'floor' },  // coin platform
-    { p: [0, -0.5, -26],     s: [8, 1, 10],    t: 'floor' },  // lava platform
-    { p: [1.25, 0.02, -26],  s: [5.5, 0.1, 3], t: 'lava' },   // lava strip, pass on the left
-    { p: [0, -0.5, -33.5],   s: [4, 1, 5],     t: 'floor' },  // jump pad platform
-    { p: [0, 0.05, -34],     s: [2, 0.1, 2],   t: 'jump' },
-    { p: [0, 1.5, -46],      s: [6, 1, 10],    t: 'floor' },  // landing (higher)
-    { p: [0, 1.5, -55],      s: [1.6, 1, 8],   t: 'floor' },  // zigzag 1
-    { p: [2.5, 1.5, -59.8],  s: [6.6, 1, 1.6], t: 'floor' },  // zigzag 2 (sideways)
-    { p: [5, 1.5, -65.6],    s: [1.6, 1, 10],  t: 'floor' },  // zigzag 3
-    { p: [5, 1.5, -73.6],    s: [6, 1, 6],     t: 'floor' },  // finish platform
-    { p: [5, 2.05, -74],     s: [3, 0.1, 3],   t: 'finish' },
-    { p: [0, -3.5, -35],     s: [90, 1, 130],  t: 'lava' },   // lava sea below everything
-  ],
-  coins: [
-    [0, 0.9, -6], [0, 0.9, -10], [0, 0.9, -13],
-    [-3, 0.9, -18], [3, 0.9, -18],
-    [-2.8, 0.9, -24.5], [-2.8, 0.9, -27.5],
-    [0, 5.2, -38],                     // mid-air, on the jump arc
-    [-2, 2.9, -47], [2, 2.9, -47],
-    [0, 2.9, -55], [3, 2.9, -59.8], [5, 2.9, -65],
-  ],
-  checkpoints: [
-    [0, 0, 0],
-    [0, 0, -31.5],
-    [0, 2, -48],
-  ],
-};
+// Maze geometry
+const CELL = 7;              // distance between platform centers
+const PLAT = 4;              // platform size
+const BRIDGE_W = 1.9;
+const NARROW_W = 1.35;
+const LAVASIDE_W = 2.6;
+const LAVA_CENTER = 1.2;     // size of a lava hole in the middle of a platform
+const PAD_OFFSET = 1.3;      // jump pad distance from platform center
+
+// ---------- Seeded random ----------
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a = (a + 0x6D2B79F5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// ---------- Procedural textures ----------
+// Periodic value noise so every texture tiles seamlessly
+function makeLattice(rng, px, py) {
+  const v = new Float32Array(px * py);
+  for (let i = 0; i < v.length; i++) v[i] = rng();
+  return (x, y) => {
+    const x0 = Math.floor(x), y0 = Math.floor(y);
+    const fx = x - x0, fy = y - y0;
+    const sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy);
+    const i0 = ((x0 % px) + px) % px, i1 = (i0 + 1) % px;
+    const j0 = ((y0 % py) + py) % py, j1 = (j0 + 1) % py;
+    const a = v[j0 * px + i0], b = v[j0 * px + i1], c = v[j1 * px + i0], d = v[j1 * px + i1];
+    return a + (b - a) * sx + (c - a) * sy + (a - b - c + d) * sx * sy;
+  };
+}
+function makeFbm(rng, px, py, octaves = 4) {
+  const layers = [];
+  let total = 0;
+  for (let k = 0; k < octaves; k++) {
+    const amp = Math.pow(0.5, k);
+    layers.push({ f: makeLattice(rng, px << k, py << k), px: px << k, py: py << k, amp });
+    total += amp;
+  }
+  return (u, v) => {
+    let s = 0;
+    for (const l of layers) s += l.f(u * l.px, v * l.py) * l.amp;
+    return s / total;
+  };
+}
+const clamp01 = (x) => Math.max(0, Math.min(1, x));
+const smooth = (a, b, x) => { const t = clamp01((x - a) / (b - a)); return t * t * (3 - 2 * t); };
+const mix = (c1, c2, t) => [c1[0] + (c2[0] - c1[0]) * t, c1[1] + (c2[1] - c1[1]) * t, c1[2] + (c2[2] - c1[2]) * t];
+
+function paintCanvas(size, fn) {
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const g = c.getContext('2d');
+  const img = g.createImageData(size, size);
+  for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+    const col = fn(x / size, y / size);
+    const i = (y * size + x) * 4;
+    img.data[i] = col[0]; img.data[i + 1] = col[1]; img.data[i + 2] = col[2]; img.data[i + 3] = 255;
+  }
+  g.putImageData(img, 0, 0);
+  return c;
+}
+
+let maxAniso = 1;
+function toTexture(canvas, repeat = true) {
+  const t = new THREE.CanvasTexture(canvas);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = maxAniso;
+  if (repeat) t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  return t;
+}
+
+function stoneCanvas() {
+  const rng = mulberry32(11);
+  const n = makeFbm(rng, 4, 4, 5);
+  const speck = makeFbm(rng, 32, 32, 2);
+  const shades = Array.from({ length: 4 }, () => 0.85 + rng() * 0.25);
+  const S = 256, T = 2; // 2x2 tiles per texture
+  return paintCanvas(S, (u, v) => {
+    const tx = Math.floor(u * T), ty = Math.floor(v * T);
+    const lu = (u * T) % 1, lv = (v * T) % 1;
+    const px = S / T;
+    const nv = n(u, v);
+    const edge = Math.min(lu, 1 - lu, lv, 1 - lv) * px;
+    if (edge < 2.5) return mix([40, 36, 32], [70, 64, 56], nv);
+    let c = mix([120, 112, 98], [196, 186, 162], nv);
+    const k = shades[ty * T + tx];
+    c = c.map((x) => x * k);
+    if (lu * px < 6 || lv * px < 6) c = c.map((x) => x * 1.12);
+    else if ((1 - lu) * px < 6 || (1 - lv) * px < 6) c = c.map((x) => x * 0.82);
+    if (speck(u, v) > 0.72) c = c.map((x) => x * 0.8);
+    return c.map((x) => Math.min(255, x));
+  });
+}
+
+function rockCanvas() {
+  const rng = mulberry32(22);
+  const n = makeFbm(rng, 4, 4, 5);
+  return paintCanvas(256, (u, v) => {
+    const nv = n(u, v);
+    const strata = Math.sin((v * 8 + nv * 1.6) * Math.PI * 2) * 0.5 + 0.5;
+    return mix([52, 38, 30], [128, 96, 70], strata * 0.55 + nv * 0.45);
+  });
+}
+
+// Wooden planks; boards run along U when acrossU is false, along V when true
+function planksCanvas(acrossU) {
+  const rng = mulberry32(33);
+  const grain = makeFbm(rng, 2, 24, 3);
+  const boards = 6;
+  const shades = Array.from({ length: boards }, () => 0.8 + rng() * 0.35);
+  const joints = Array.from({ length: boards }, () => rng());
+  return paintCanvas(256, (u0, v0) => {
+    const u = acrossU ? v0 : u0, v = acrossU ? u0 : v0;
+    const b = Math.floor(v * boards), lv = (v * boards) % 1;
+    if (lv < 0.07) return [34, 22, 14];
+    const jd = Math.abs(((u + joints[b]) % 1) - 0.5);
+    if (jd < 0.006) return [45, 30, 18];
+    const g = grain(u, v);
+    let c = mix([110, 68, 36], [178, 122, 70], g);
+    c = c.map((x) => x * shades[b]);
+    if (lv > 0.9) c = c.map((x) => x * 0.85);
+    return c.map((x) => Math.min(255, x));
+  });
+}
+
+function lavaCanvas() {
+  const rng = mulberry32(44);
+  const n = makeFbm(rng, 4, 4, 5);
+  const m = makeFbm(rng, 3, 3, 3);
+  return paintCanvas(256, (u, v) => {
+    const nv = n(u, v);
+    const crack = 1 - Math.min(1, Math.abs(nv - 0.5) * 7);
+    const glow = m(u, v);
+    let c = mix([40, 8, 4], [150, 28, 6], glow);
+    c = mix(c, [255, 110, 15], smooth(0.2, 0.7, crack));
+    c = mix(c, [255, 225, 110], smooth(0.8, 1, crack));
+    return c;
+  });
+}
+
+// Jump pad arrows, rotated so they point along the launch direction
+function padCanvas(angle) {
+  const c = document.createElement('canvas');
+  c.width = c.height = 128;
+  const g = c.getContext('2d');
+  const grad = g.createRadialGradient(64, 64, 10, 64, 64, 90);
+  grad.addColorStop(0, '#4fd2ff');
+  grad.addColorStop(1, '#1466a8');
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 128, 128);
+  g.strokeStyle = '#0b3b66';
+  g.lineWidth = 8;
+  g.strokeRect(4, 4, 120, 120);
+  g.translate(64, 64);
+  g.rotate(angle);
+  g.fillStyle = 'rgba(255,255,255,0.92)';
+  for (let i = 0; i < 3; i++) {
+    const y = 30 - i * 26;
+    g.beginPath();
+    g.moveTo(-30, y + 12); g.lineTo(0, y - 12); g.lineTo(30, y + 12);
+    g.lineTo(30, y + 24); g.lineTo(0, y); g.lineTo(-30, y + 24);
+    g.closePath();
+    g.fill();
+  }
+  return c;
+}
+
+function finishCanvas() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 128;
+  const g = c.getContext('2d');
+  g.fillStyle = '#2fbf4a';
+  g.fillRect(0, 0, 128, 128);
+  const n = 6, s = (128 - 16) / n;
+  for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+    g.fillStyle = (i + j) % 2 ? '#111' : '#f4f4f4';
+    g.fillRect(8 + i * s, 8 + j * s, s, s);
+  }
+  return c;
+}
+
+function skyCanvas() {
+  const c = document.createElement('canvas');
+  c.width = 4; c.height = 256;
+  const g = c.getContext('2d');
+  const grad = g.createLinearGradient(0, 0, 0, 256);
+  grad.addColorStop(0, '#0b0d1c');
+  grad.addColorStop(0.55, '#2a1532');
+  grad.addColorStop(1, '#6a2412');
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 4, 256);
+  return c;
+}
+
+function ballCanvas() {
+  const c = document.createElement('canvas');
+  c.width = 256; c.height = 128;
+  const g = c.getContext('2d');
+  for (let i = 0; i < 8; i++) for (let j = 0; j < 4; j++) {
+    g.fillStyle = (i + j) % 2 ? '#eeeeee' : '#c0392b';
+    g.fillRect(i * 32, j * 32, 32, 32);
+  }
+  return c;
+}
+
+// Replace box UVs with world-space coordinates so textures keep a constant scale
+function applyWorldUV(geo, cx, cy, cz, scale) {
+  const p = geo.attributes.position, nrm = geo.attributes.normal, uv = geo.attributes.uv;
+  for (let i = 0; i < p.count; i++) {
+    const x = p.getX(i) + cx, y = p.getY(i) + cy, z = p.getZ(i) + cz;
+    const nx = Math.abs(nrm.getX(i)), ny = Math.abs(nrm.getY(i));
+    if (ny > 0.5) uv.setXY(i, x / scale, -z / scale);
+    else if (nx > 0.5) uv.setXY(i, z / scale, y / scale);
+    else uv.setXY(i, x / scale, y / scale);
+  }
+  uv.needsUpdate = true;
+}
 
 // ---------- Renderer / scene ----------
 const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -104,93 +299,240 @@ renderer.setSize(innerWidth, innerHeight);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 document.body.prepend(renderer.domElement);
+maxAniso = renderer.capabilities.getMaxAnisotropy();
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x1b1f2a);
-scene.fog = new THREE.Fog(0x1b1f2a, 30, 80);
+scene.background = toTexture(skyCanvas(), false);
+scene.fog = new THREE.Fog(0x4a1c14, 28, 75);
 
 const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 200);
 
-scene.add(new THREE.HemisphereLight(0xbfd8ff, 0x552200, 0.9));
-const sun = new THREE.DirectionalLight(0xffffff, 1.6);
+scene.add(new THREE.HemisphereLight(0xbfd8ff, 0x802a00, 0.9));
+const sun = new THREE.DirectionalLight(0xfff2e0, 1.6);
 sun.castShadow = true;
 sun.shadow.mapSize.set(1024, 1024);
 Object.assign(sun.shadow.camera, { left: -15, right: 15, top: 15, bottom: -15, near: 1, far: 50 });
 scene.add(sun, sun.target);
 
-// ---------- Build level ----------
-const COLORS = { floor: 0xc8a06a, jump: 0x33c3ff, lava: 0xff4a00, finish: 0x3ddc55 };
-const solids = [];
-const lavas = [];
-const lavaMaterials = [];
-
-for (const b of LEVEL.boxes) {
-  const [x, y, z] = b.p, [w, h, d] = b.s;
-  const box = { t: b.t, minX: x - w / 2, maxX: x + w / 2, minY: y - h / 2, maxY: y + h / 2, minZ: z - d / 2, maxZ: z + d / 2 };
-  const isLava = b.t === 'lava';
-  const mat = new THREE.MeshStandardMaterial({
-    color: COLORS[b.t],
-    roughness: 0.8,
-    emissive: isLava ? 0xff3300 : (b.t === 'jump' ? 0x0a4a66 : 0x000000),
-    emissiveIntensity: isLava ? 0.8 : 1,
-  });
-  if (isLava) lavaMaterials.push(mat);
-  const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
-  mesh.position.set(x, y, z);
-  mesh.receiveShadow = true;
-  scene.add(mesh);
-  if (!isLava && w < 50) {
-    const edges = new THREE.LineSegments(new THREE.EdgesGeometry(mesh.geometry), new THREE.LineBasicMaterial({ color: 0x5a3d1c }));
-    edges.position.copy(mesh.position);
-    scene.add(edges);
-  }
-  (isLava ? lavas : solids).push(box);
+// Shared textures and materials
+const lavaTex = toTexture(lavaCanvas());
+const MAT = {
+  stone: new THREE.MeshStandardMaterial({ map: toTexture(stoneCanvas()), roughness: 0.9 }),
+  rock: new THREE.MeshStandardMaterial({ map: toTexture(rockCanvas()), roughness: 1 }),
+  planksX: new THREE.MeshStandardMaterial({ map: toTexture(planksCanvas(true)), roughness: 0.85 }),
+  planksZ: new THREE.MeshStandardMaterial({ map: toTexture(planksCanvas(false)), roughness: 0.85 }),
+  lava: new THREE.MeshStandardMaterial({ map: lavaTex, emissiveMap: lavaTex, emissive: 0xffffff, emissiveIntensity: 0.9, roughness: 1 }),
+  padSide: new THREE.MeshStandardMaterial({ color: 0x1d5f8f, roughness: 0.6 }),
+  finish: new THREE.MeshStandardMaterial({ map: toTexture(finishCanvas(), false), roughness: 0.6, emissive: 0x0a3010 }),
+  coin: new THREE.MeshStandardMaterial({ color: 0xffcc33, metalness: 0.8, roughness: 0.3, emissive: 0x664000 }),
+};
+// Arrow textures: canvas "up" maps to -Z on a box top face, canvas "right" maps to +X
+const padMats = {};
+for (const [key, angle] of [['1,0', Math.PI / 2], ['-1,0', -Math.PI / 2], ['0,1', Math.PI], ['0,-1', 0]]) {
+  padMats[key] = new THREE.MeshStandardMaterial({ map: toTexture(padCanvas(angle), false), roughness: 0.5, emissive: 0x0a3050 });
 }
 
-// Ball with a checker texture so rolling is visible
-function makeBallTexture() {
-  const c = document.createElement('canvas');
-  c.width = 256; c.height = 128;
-  const g = c.getContext('2d');
-  for (let i = 0; i < 8; i++) for (let j = 0; j < 4; j++) {
-    g.fillStyle = (i + j) % 2 ? '#eeeeee' : '#c0392b';
-    g.fillRect(i * 32, j * 32, 32, 32);
-  }
-  const tex = new THREE.CanvasTexture(c);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  return tex;
-}
 const ball = new THREE.Mesh(
   new THREE.SphereGeometry(R, 32, 16),
-  new THREE.MeshStandardMaterial({ map: makeBallTexture(), roughness: 0.4, metalness: 0.1 })
+  new THREE.MeshStandardMaterial({ map: toTexture(ballCanvas(), false), roughness: 0.4, metalness: 0.1 })
 );
 ball.castShadow = true;
 scene.add(ball);
 
-// Coins
 const coinGeo = new THREE.CylinderGeometry(0.4, 0.4, 0.1, 24);
 coinGeo.rotateX(Math.PI / 2);
-const coinMat = new THREE.MeshStandardMaterial({ color: 0xffcc33, metalness: 0.8, roughness: 0.3, emissive: 0x553300 });
-const coins = LEVEL.coins.map(([x, y, z]) => {
-  const m = new THREE.Mesh(coinGeo, coinMat);
-  m.position.set(x, y, z);
-  m.castShadow = true;
-  scene.add(m);
-  return m;
-});
 
-// Checkpoint flags
-const flags = LEVEL.checkpoints.map(([x, y, z], i) => {
-  const group = new THREE.Group();
-  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 2), new THREE.MeshStandardMaterial({ color: 0xdddddd }));
-  pole.position.y = 1;
-  const cloth = new THREE.Mesh(new THREE.PlaneGeometry(0.8, 0.5), new THREE.MeshStandardMaterial({ color: 0xaaaaaa, side: THREE.DoubleSide }));
-  cloth.position.set(0.4, 1.7, 0);
-  group.add(pole, cloth);
-  group.position.set(x + 1.6, y, z);
-  if (i > 0) scene.add(group);  // no flag at the start
-  return cloth.material;
-});
+// ---------- Level generator ----------
+function difficulty(L) {
+  return {
+    cols: Math.min(3 + Math.floor((L - 1) / 2), 7),
+    rows: Math.min(4 + Math.floor((L - 1) / 2), 9),
+    pGap: Math.min(0.3, 0.1 + 0.03 * L),
+    pNarrow: Math.min(0.4, 0.05 * L),
+    pLavaSide: Math.min(0.3, 0.04 + 0.03 * L),
+    pLavaCenter: Math.min(0.35, 0.05 + 0.04 * L),
+    maxCoins: Math.min(3 + L, 10),
+  };
+}
+
+function generateMaze(L, seed) {
+  const rng = mulberry32(seed);
+  const D = difficulty(L);
+  const { cols, rows } = D;
+  const N = cols * rows;
+  const adj = Array.from({ length: N }, () => []);
+  const start = Math.floor(cols / 2); // bottom row, middle
+  const neighbors = (c) => {
+    const r = Math.floor(c / cols), k = c % cols, out = [];
+    if (k > 0) out.push(c - 1);
+    if (k < cols - 1) out.push(c + 1);
+    if (r > 0) out.push(c - cols);
+    if (r < rows - 1) out.push(c + cols);
+    return out;
+  };
+
+  // Growing-tree maze: mix of newest/random picks gives long corridors plus many dead ends
+  const visited = new Array(N).fill(false);
+  const active = [start];
+  visited[start] = true;
+  while (active.length) {
+    const idx = rng() < 0.55 ? active.length - 1 : Math.floor(rng() * active.length);
+    const c = active[idx];
+    const free = neighbors(c).filter((n) => !visited[n]);
+    if (!free.length) { active.splice(idx, 1); continue; }
+    const n = free[Math.floor(rng() * free.length)];
+    visited[n] = true;
+    adj[c].push(n); adj[n].push(c);
+    active.push(n);
+  }
+
+  // Distances from start; the farthest cell becomes the finish
+  const dist = new Array(N).fill(-1);
+  dist[start] = 0;
+  const queue = [start];
+  while (queue.length) {
+    const c = queue.shift();
+    for (const n of adj[c]) if (dist[n] < 0) { dist[n] = dist[c] + 1; queue.push(n); }
+  }
+  let finish = start;
+  for (let c = 0; c < N; c++) if (dist[c] > dist[finish]) finish = c;
+
+  const cells = Array.from({ length: N }, (_, c) => ({
+    x: ((c % cols) - (cols - 1) / 2) * CELL,
+    z: -Math.floor(c / cols) * CELL,
+    adj: adj[c],
+    coin: false,
+    lava: false,
+    hasGap: false,
+  }));
+
+  // Edge types; no jump pads next to start or finish so they never overlap the spawn or finish pad
+  const edges = [];
+  for (let a = 0; a < N; a++) for (const b of adj[a]) if (a < b) {
+    let type = 'normal';
+    const r = rng();
+    const nearSpecial = [a, b].some((c) => c === start || c === finish);
+    if (r < D.pGap && !nearSpecial) type = 'gap';
+    else if (r < D.pGap + D.pNarrow) type = 'narrow';
+    else if (r < D.pGap + D.pNarrow + D.pLavaSide) type = 'lavaSide';
+    edges.push({ a, b, type, side: rng() < 0.5 ? 1 : -1 });
+    if (type === 'gap') { cells[a].hasGap = true; cells[b].hasGap = true; }
+  }
+
+  // Coins go into dead ends, the deepest ones first
+  const special = (c) => c === start || c === finish;
+  const leaves = [];
+  for (let c = 0; c < N; c++) if (adj[c].length === 1 && !special(c)) leaves.push(c);
+  leaves.sort((p, q) => dist[q] - dist[p]);
+  const coinCells = leaves.slice(0, D.maxCoins);
+  if (coinCells.length < 2) {
+    const rest = [...Array(N).keys()].filter((c) => !special(c) && !coinCells.includes(c)).sort((p, q) => dist[q] - dist[p]);
+    while (coinCells.length < 2 && rest.length) coinCells.push(rest.shift());
+  }
+  coinCells.forEach((c) => (cells[c].coin = true));
+
+  // Lava holes only on plain cells so spawn points and pads stay safe
+  for (let c = 0; c < N; c++) {
+    const cell = cells[c];
+    if (!special(c) && !cell.coin && !cell.hasGap && rng() < D.pLavaCenter) cell.lava = true;
+  }
+
+  return { cols, rows, cells, edges, start, finish };
+}
+
+// ---------- Level building ----------
+let level = 1;
+let maze = null;
+let levelGroup = null;
+let solids = [];
+let lavas = [];
+let coins = [];
+let bounds = null;
+
+function addBox(p, s, mats, worldScale) {
+  const geo = new THREE.BoxGeometry(s[0], s[1], s[2]);
+  if (worldScale) applyWorldUV(geo, p[0], p[1], p[2], worldScale);
+  const mesh = new THREE.Mesh(geo, mats);
+  mesh.position.set(p[0], p[1], p[2]);
+  mesh.receiveShadow = true;
+  levelGroup.add(mesh);
+  return {
+    minX: p[0] - s[0] / 2, maxX: p[0] + s[0] / 2,
+    minY: p[1] - s[1] / 2, maxY: p[1] + s[1] / 2,
+    minZ: p[2] - s[2] / 2, maxZ: p[2] + s[2] / 2,
+  };
+}
+// Box face order in three.js: +X, -X, +Y, -Y, +Z, -Z
+const withTop = (top, side) => [side, side, top, side, side, side];
+
+function buildLevel(m) {
+  if (levelGroup) {
+    scene.remove(levelGroup);
+    levelGroup.traverse((o) => { if (o.geometry && o.geometry !== coinGeo) o.geometry.dispose(); });
+  }
+  levelGroup = new THREE.Group();
+  scene.add(levelGroup);
+  solids = []; lavas = []; coins = [];
+
+  const pads = [];
+  m.cells.forEach((cell, c) => {
+    const b = addBox([cell.x, -0.5, cell.z], [PLAT, 1, PLAT], withTop(MAT.stone, MAT.rock), 2);
+    solids.push({ ...b, t: 'floor', cell: c });
+    if (cell.lava) {
+      lavas.push(addBox([cell.x, 0.02, cell.z], [LAVA_CENTER, 0.1, LAVA_CENTER], MAT.lava, 3));
+    }
+    if (cell.coin) {
+      const coin = new THREE.Mesh(coinGeo, MAT.coin);
+      coin.position.set(cell.x, 0.9, cell.z);
+      coin.castShadow = true;
+      levelGroup.add(coin);
+      coins.push(coin);
+    }
+  });
+
+  for (const e of m.edges) {
+    const A = m.cells[e.a], B = m.cells[e.b];
+    const dx = Math.sign(B.x - A.x), dz = Math.sign(B.z - A.z);
+    const mx = (A.x + B.x) / 2, mz = (A.z + B.z) / 2;
+    const along = CELL - PLAT + 0.2;
+    if (e.type === 'gap') {
+      // Jump pads on both sides, each pointing across the gap
+      for (const [C, sx, sz, cellIdx] of [[A, dx, dz, e.a], [B, -dx, -dz, e.b]]) {
+        const size = sx ? [1.2, 0.1, 1.6] : [1.6, 0.1, 1.2];
+        const p = [C.x + sx * PAD_OFFSET, 0.05, C.z + sz * PAD_OFFSET];
+        const b = addBox(p, size, withTop(padMats[`${sx},${sz}`], MAT.padSide));
+        pads.push({ ...b, t: 'jump', dir: { x: sx, z: sz }, cell: cellIdx });
+      }
+      continue;
+    }
+    const w = e.type === 'narrow' ? NARROW_W : e.type === 'lavaSide' ? LAVASIDE_W : BRIDGE_W;
+    const size = dx ? [along, 0.6, w] : [w, 0.6, along];
+    const b = addBox([mx, -0.3, mz], size, withTop(dx ? MAT.planksX : MAT.planksZ, MAT.rock), 2);
+    solids.push({ ...b, t: 'bridge' });
+    if (e.type === 'lavaSide') {
+      // Lava strip covering one side of the bridge, leaving a narrow safe lane
+      const off = (LAVASIDE_W / 2 - 0.6) * e.side;
+      const p = dx ? [mx, 0.02, mz + off] : [mx + off, 0.02, mz];
+      const s = dx ? [1.4, 0.1, 1.2] : [1.2, 0.1, 1.4];
+      lavas.push(addBox(p, s, MAT.lava, 3));
+    }
+  }
+
+  const F = m.cells[m.finish];
+  const fb = addBox([F.x, 0.05, F.z], [2.2, 0.1, 2.2], withTop(MAT.finish, MAT.padSide));
+
+  // Pads and finish go last so they win when the ball touches several boxes
+  solids.push(...pads, { ...fb, t: 'finish', cell: m.finish });
+
+  // Lava sea under the whole maze
+  const xs = m.cells.map((c) => c.x), zs = m.cells.map((c) => c.z);
+  bounds = { minX: Math.min(...xs), maxX: Math.max(...xs), minZ: Math.min(...zs), maxZ: Math.max(...zs) };
+  const cx = (bounds.minX + bounds.maxX) / 2, cz = (bounds.minZ + bounds.maxZ) / 2;
+  const sw = bounds.maxX - bounds.minX + 120, sd = bounds.maxZ - bounds.minZ + 120;
+  lavas.push(addBox([cx, -3.5, cz], [sw, 1, sd], MAT.lava, 6));
+
+  setupMinimap();
+}
 
 // ---------- UI helpers ----------
 const $ = (id) => document.getElementById(id);
@@ -201,7 +543,72 @@ function showMsg(text, ms = 1200) {
   clearTimeout(msgTimer);
   msgTimer = setTimeout(() => ($('msg').style.opacity = 0), ms);
 }
-function updateHud() { $('coins').textContent = `🪙 ${collected}/${coins.length}`; }
+function updateHud() { $('info').textContent = `Ур. ${level} · 🪙 ${collected}/${coins.length}`; }
+
+function loadSavedLevel() {
+  try { const v = parseInt(localStorage.getItem('ballLevel'), 10); return v > 0 ? v : 1; } catch (e) { return 1; }
+}
+function saveLevel() {
+  try { localStorage.setItem('ballLevel', String(level)); } catch (e) { /* storage may be unavailable */ }
+}
+
+// ---------- Minimap ----------
+const mm = $('minimap');
+const mctx = mm.getContext('2d');
+let mmScale = 1, mmW = 0, mmH = 0;
+const MM_PAD = 10;
+function setupMinimap() {
+  const spanX = bounds.maxX - bounds.minX + PLAT, spanZ = bounds.maxZ - bounds.minZ + PLAT;
+  const maxW = Math.min(180, innerWidth * 0.28), maxH = Math.min(230, innerHeight * 0.4);
+  mmScale = Math.min((maxW - 2 * MM_PAD) / spanX, (maxH - 2 * MM_PAD) / spanZ);
+  mmW = Math.round(spanX * mmScale + 2 * MM_PAD);
+  mmH = Math.round(spanZ * mmScale + 2 * MM_PAD);
+  const dpr = Math.min(devicePixelRatio, 2);
+  mm.width = mmW * dpr; mm.height = mmH * dpr;
+  mm.style.width = mmW + 'px'; mm.style.height = mmH + 'px';
+  mctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+const mmX = (x) => MM_PAD + (x - bounds.minX + PLAT / 2) * mmScale;
+const mmY = (z) => MM_PAD + (z - bounds.minZ + PLAT / 2) * mmScale;
+function drawMinimap() {
+  if (!maze) return;
+  mctx.clearRect(0, 0, mmW, mmH);
+  const s = mmScale;
+  for (const e of maze.edges) {
+    const A = maze.cells[e.a], B = maze.cells[e.b];
+    mctx.strokeStyle = e.type === 'gap' ? '#4fd2ff' : '#b08a5a';
+    mctx.lineWidth = Math.max(2, s * (e.type === 'narrow' ? NARROW_W : BRIDGE_W) * 0.8);
+    mctx.setLineDash(e.type === 'gap' ? [3, 3] : []);
+    mctx.beginPath();
+    mctx.moveTo(mmX(A.x), mmY(A.z));
+    mctx.lineTo(mmX(B.x), mmY(B.z));
+    mctx.stroke();
+  }
+  mctx.setLineDash([]);
+  const half = (PLAT / 2) * s;
+  maze.cells.forEach((cell, c) => {
+    mctx.fillStyle = c === maze.finish ? '#2fbf4a' : '#9c948a';
+    mctx.fillRect(mmX(cell.x) - half, mmY(cell.z) - half, half * 2, half * 2);
+    if (cell.lava) {
+      mctx.fillStyle = '#ff5a10';
+      const l = (LAVA_CENTER / 2) * s;
+      mctx.fillRect(mmX(cell.x) - l, mmY(cell.z) - l, l * 2, l * 2);
+    }
+  });
+  mctx.fillStyle = '#ffcc33';
+  for (const coin of coins) if (coin.visible) {
+    mctx.beginPath();
+    mctx.arc(mmX(coin.position.x), mmY(coin.position.z), Math.max(2.5, s * 0.6), 0, Math.PI * 2);
+    mctx.fill();
+  }
+  mctx.fillStyle = '#ff3030';
+  mctx.strokeStyle = '#fff';
+  mctx.lineWidth = 1.5;
+  mctx.beginPath();
+  mctx.arc(mmX(pos.x), mmY(pos.z), Math.max(3, s * 0.7), 0, Math.PI * 2);
+  mctx.fill();
+  mctx.stroke();
+}
 
 // ---------- Input: tilt ----------
 const tilt = { x: 0, y: 0, has: false };
@@ -256,30 +663,40 @@ document.addEventListener('gesturestart', (e) => e.preventDefault());
 const pos = new THREE.Vector3();
 const vel = new THREE.Vector3();
 let grounded = false;
-let groundType = null;
+let groundBox = null;
 let jumpCooldown = 0;
-let state = 'menu';       // menu | play | dead | win
-let checkpoint = 0;
+let state = 'menu';       // menu | play | dead | transition
+let lastCell = 0;
 let collected = 0;
+const baseSeed = Math.floor(Math.random() * 1e9);
 
-function spawnPoint() {
-  const [x, y, z] = LEVEL.checkpoints[checkpoint];
-  return new THREE.Vector3(x, y + R + 0.2, z);
+function spawnPoint(c) {
+  const cell = maze.cells[c];
+  let x = cell.x, z = cell.z;
+  if (cell.lava) {
+    // Spawn on the ring next to a bridge instead of in the lava hole
+    const n = maze.cells[cell.adj[0]];
+    x += Math.sign(n.x - cell.x) * 1.35;
+    z += Math.sign(n.z - cell.z) * 1.35;
+  }
+  return new THREE.Vector3(x, R + 0.2, z);
 }
 
 function respawn() {
-  pos.copy(spawnPoint());
+  pos.copy(spawnPoint(lastCell));
   vel.set(0, 0, 0);
   grounded = false;
   snapCamera();
   state = 'play';
 }
 
-function resetGame() {
-  checkpoint = 0;
+// Builds a level; the same level number always gives the same layout within a session
+function loadLevel(n) {
+  level = n;
+  maze = generateMaze(level, baseSeed + level * 7919);
+  buildLevel(maze);
   collected = 0;
-  coins.forEach((c) => (c.visible = true));
-  flags.forEach((m) => m.color.set(0xaaaaaa));
+  lastCell = maze.start;
   updateHud();
   respawn();
 }
@@ -288,15 +705,19 @@ function die(text) {
   if (state !== 'play') return;
   state = 'dead';
   showMsg(text, 900);
-  setTimeout(respawn, 900);
+  setTimeout(() => { if (state === 'dead') respawn(); }, 900);
 }
 
-function win() {
-  state = 'win';
-  $('overlay').querySelector('h1').textContent = 'Финиш! 🎉';
-  $('overlayText').textContent = `Монеты: ${collected} из ${coins.length}`;
-  $('startBtn').textContent = 'Ещё раз';
-  $('overlay').style.display = 'flex';
+function reachFinish() {
+  if (state !== 'play') return;
+  state = 'transition';
+  if (collected === coins.length) {
+    showMsg(`Уровень ${level} пройден! 🎉`, 1600);
+    setTimeout(() => { loadLevel(level + 1); saveLevel(); }, 1600);
+  } else {
+    showMsg(`Вы не собрали все монеты! (${collected}/${coins.length})`, 2200);
+    setTimeout(() => loadLevel(level), 2200);
+  }
 }
 
 // ---------- Physics ----------
@@ -305,10 +726,10 @@ function collide(b) {
   const cx = Math.max(b.minX, Math.min(pos.x, b.maxX));
   const cy = Math.max(b.minY, Math.min(pos.y, b.maxY));
   const cz = Math.max(b.minZ, Math.min(pos.z, b.maxZ));
-  let dx = pos.x - cx, dy = pos.y - cy, dz = pos.z - cz;
+  const dx = pos.x - cx, dy = pos.y - cy, dz = pos.z - cz;
   const d2 = dx * dx + dy * dy + dz * dz;
   if (d2 >= R * R) return null;
-  let d = Math.sqrt(d2);
+  const d = Math.sqrt(d2);
   let nx, ny, nz;
   if (d < 1e-6) {
     // Center inside the box: push up as a fallback
@@ -348,21 +769,28 @@ function physicsStep(dt, inp) {
   pos.addScaledVector(vel, dt);
 
   grounded = false;
-  groundType = null;
+  groundBox = null;
   for (const b of solids) {
     const ny = collide(b);
-    if (ny !== null && ny > 0.6) { grounded = true; groundType = b.t; }
+    if (ny !== null && ny > 0.6) { grounded = true; groundBox = b; }
   }
 
   for (const b of lavas) if (touches(b)) return die('Лава! 🔥');
   if (pos.y < KILL_Y) return die('Упал!');
+  if (!grounded) return;
 
-  if (grounded && groundType === 'jump' && jumpCooldown <= 0) {
-    vel.y = JUMP_SPEED;
-    jumpCooldown = 0.4;
-    grounded = false;
+  if (groundBox.t === 'floor') lastCell = groundBox.cell;
+
+  // A pad fires only when the ball moves towards the gap, so landing on the far pad is safe
+  if (groundBox.t === 'jump' && jumpCooldown <= 0) {
+    const d = groundBox.dir;
+    if (vel.x * d.x + vel.z * d.z > 0.8) {
+      vel.set(d.x * JUMP_H, JUMP_V, d.z * JUMP_H);
+      jumpCooldown = 0.4;
+      grounded = false;
+    }
   }
-  if (grounded && groundType === 'finish') win();
+  if (groundBox && groundBox.t === 'finish') reachFinish();
 }
 
 function checkPickups() {
@@ -371,29 +799,23 @@ function checkPickups() {
       c.visible = false;
       collected++;
       updateHud();
+      showMsg(collected === coins.length ? 'Все монеты! Теперь к финишу 🏁' : '🪙', collected === coins.length ? 1800 : 500);
     }
   }
-  LEVEL.checkpoints.forEach(([x, y, z], i) => {
-    if (i > checkpoint && Math.hypot(pos.x - x, pos.z - z) < 2 && Math.abs(pos.y - y) < 2) {
-      checkpoint = i;
-      flags[i].color.set(0x3ddc55);
-      showMsg('Чекпоинт ✔');
-    }
-  });
 }
 
 // ---------- Camera ----------
-const CAM_OFFSET = new THREE.Vector3(0, 5.5, 8);
+const CAM_OFFSET = new THREE.Vector3(0, 10, 6.5);
 const camWanted = new THREE.Vector3();
 function snapCamera() {
   camera.position.copy(pos).add(CAM_OFFSET);
-  camera.lookAt(pos.x, pos.y, pos.z - 3);
+  camera.lookAt(pos.x, pos.y, pos.z - 1);
 }
 function updateCamera(dt) {
   camWanted.copy(pos).add(CAM_OFFSET);
   if (state === 'dead') camWanted.y = Math.max(camWanted.y, camera.position.y - 1); // don't dive into lava
   camera.position.lerp(camWanted, 1 - Math.exp(-5 * dt));
-  camera.lookAt(pos.x, pos.y, pos.z - 3);
+  camera.lookAt(pos.x, pos.y, pos.z - 1);
   sun.position.set(pos.x + 6, pos.y + 14, pos.z + 4);
   sun.target.position.copy(pos);
 }
@@ -426,10 +848,12 @@ function frame(now) {
   }
 
   ball.position.copy(pos);
-  coins.forEach((c, i) => { c.rotation.y = time * 2 + i; });
-  lavaMaterials.forEach((m) => { m.emissiveIntensity = 0.7 + 0.25 * Math.sin(time * 3); });
+  coins.forEach((c, i) => { c.rotation.y = time * 2 + i; c.position.y = 0.9 + Math.sin(time * 3 + i) * 0.08; });
+  lavaTex.offset.set(time * 0.012, time * 0.007);
+  MAT.lava.emissiveIntensity = 0.8 + 0.2 * Math.sin(time * 2.5);
   updateCamera(dt);
   renderer.render(scene, camera);
+  drawMinimap();
   requestAnimationFrame(frame);
 }
 
@@ -455,23 +879,36 @@ async function enableSensors() {
 
 $('startBtn').addEventListener('click', async () => {
   await enableSensors();
-  if (state === 'win' || state === 'menu') resetGame();
   needCalib = true;
   $('overlay').style.display = 'none';
+  respawn();
+});
+
+$('resetProgressBtn').addEventListener('click', () => {
+  loadLevel(1);
+  state = 'menu';
+  saveLevel();
+  $('startBtn').textContent = 'Старт';
+  $('resetProgressBtn').style.display = 'none';
 });
 
 $('calibBtn').addEventListener('click', () => { needCalib = true; showMsg('Калибровка ✔', 800); });
-$('restartBtn').addEventListener('click', () => { if (state !== 'menu' && state !== 'win') resetGame(); });
+$('restartBtn').addEventListener('click', () => { if (state === 'play' || state === 'dead') loadLevel(level); });
 
 addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
+  if (bounds) setupMinimap();
 });
 
-pos.copy(spawnPoint());
-snapCamera();
-updateHud();
+// Initial level behind the start screen
+loadLevel(loadSavedLevel());
+state = 'menu';
+if (level > 1) {
+  $('startBtn').textContent = `Продолжить (уровень ${level})`;
+  $('resetProgressBtn').style.display = 'block';
+}
 requestAnimationFrame(frame);
 </script>
 </body>
