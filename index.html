@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Шарик">
+<title>Шарик</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #1b1f2a; touch-action: none;
+    -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+    font-family: -apple-system, system-ui, sans-serif; color: #fff; }
+  canvas { display: block; }
+  #hud { position: fixed; top: env(safe-area-inset-top, 0); left: 0; right: 0; display: flex;
+    justify-content: space-between; align-items: center; padding: 12px 16px; pointer-events: none;
+    font-size: 22px; font-weight: 700; text-shadow: 0 1px 3px #000; }
+  #hud button { pointer-events: auto; }
+  button { font: inherit; font-size: 20px; padding: 12px 22px; border: 0; border-radius: 14px;
+    background: #ffb020; color: #222; font-weight: 700; }
+  .small { font-size: 15px; padding: 8px 12px; background: rgba(255,255,255,.85); }
+  #overlay { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 18px; background: rgba(10,12,20,.78); text-align: center; padding: 24px; }
+  #overlay h1 { margin: 0; font-size: 48px; }
+  #overlay p { margin: 0; max-width: 440px; opacity: .9; line-height: 1.45; font-size: 17px; }
+  #msg { position: fixed; top: 38%; left: 0; right: 0; text-align: center; font-size: 44px; font-weight: 800;
+    text-shadow: 0 2px 8px #000; pointer-events: none; opacity: 0; transition: opacity .25s; }
+</style>
+</head>
+<body>
+<div id="hud">
+  <span id="coins">🪙 0/0</span>
+  <span>
+    <button class="small" id="calibBtn">⟳ Калибровка</button>
+    <button class="small" id="restartBtn">↺ Заново</button>
+  </span>
+</div>
+<div id="msg"></div>
+<div id="overlay">
+  <h1>Шарик</h1>
+  <p id="overlayText">Наклоняй iPad, чтобы катить шарик. Собирай монеты, не падай в лаву, синие площадки подбрасывают вверх. Цель — зелёный финиш.<br><br>Держи iPad так, как удобно играть, и нажми «Старт» — это положение станет нулевым.</p>
+  <button id="startBtn">Старт</button>
+</div>
+
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+
+// ---------- Tunable constants ----------
+const R = 0.5;               // ball radius
+const GRAVITY = 22;
+const TILT_ACCEL = 16;       // acceleration at full tilt
+const GROUND_DAMPING = 1.3;  // rolling friction on the ground
+const AIR_CONTROL = 0.35;    // fraction of control while airborne
+const MAX_TILT_DEG = 22;     // tilt angle treated as "full"
+const DEADZONE_DEG = 1.5;
+const JUMP_SPEED = 15;       // vertical speed given by a jump pad
+const KILL_Y = -10;          // safety net if the ball falls out of the world
+const SUBSTEPS = 4;
+
+// ---------- Level data ----------
+// Box: p = center [x,y,z], s = size [w,h,d], t = type (floor | jump | lava | finish)
+// Forward is -Z, up is +Y.
+const LEVEL = {
+  boxes: [
+    { p: [0, -0.5, 0],       s: [6, 1, 6],     t: 'floor' },  // start
+    { p: [0, -0.5, -9],      s: [2, 1, 12],    t: 'floor' },  // narrow path
+    { p: [0, -0.5, -18],     s: [8, 1, 6],     t: 'floor' },  // coin platform
+    { p: [0, -0.5, -26],     s: [8, 1, 10],    t: 'floor' },  // lava platform
+    { p: [1.25, 0.02, -26],  s: [5.5, 0.1, 3], t: 'lava' },   // lava strip, pass on the left
+    { p: [0, -0.5, -33.5],   s: [4, 1, 5],     t: 'floor' },  // jump pad platform
+    { p: [0, 0.05, -34],     s: [2, 0.1, 2],   t: 'jump' },
+    { p: [0, 1.5, -46],      s: [6, 1, 10],    t: 'floor' },  // landing (higher)
+    { p: [0, 1.5, -55],      s: [1.6, 1, 8],   t: 'floor' },  // zigzag 1
+    { p: [2.5, 1.5, -59.8],  s: [6.6, 1, 1.6], t: 'floor' },  // zigzag 2 (sideways)
+    { p: [5, 1.5, -65.6],    s: [1.6, 1, 10],  t: 'floor' },  // zigzag 3
+    { p: [5, 1.5, -73.6],    s: [6, 1, 6],     t: 'floor' },  // finish platform
+    { p: [5, 2.05, -74],     s: [3, 0.1, 3],   t: 'finish' },
+    { p: [0, -3.5, -35],     s: [90, 1, 130],  t: 'lava' },   // lava sea below everything
+  ],
+  coins: [
+    [0, 0.9, -6], [0, 0.9, -10], [0, 0.9, -13],
+    [-3, 0.9, -18], [3, 0.9, -18],
+    [-2.8, 0.9, -24.5], [-2.8, 0.9, -27.5],
+    [0, 5.2, -38],                     // mid-air, on the jump arc
+    [-2, 2.9, -47], [2, 2.9, -47],
+    [0, 2.9, -55], [3, 2.9, -59.8], [5, 2.9, -65],
+  ],
+  checkpoints: [
+    [0, 0, 0],
+    [0, 0, -31.5],
+    [0, 2, -48],
+  ],
+};
+
+// ---------- Renderer / scene ----------
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.prepend(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1b1f2a);
+scene.fog = new THREE.Fog(0x1b1f2a, 30, 80);
+
+const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 200);
+
+scene.add(new THREE.HemisphereLight(0xbfd8ff, 0x552200, 0.9));
+const sun = new THREE.DirectionalLight(0xffffff, 1.6);
+sun.castShadow = true;
+sun.shadow.mapSize.set(1024, 1024);
+Object.assign(sun.shadow.camera, { left: -15, right: 15, top: 15, bottom: -15, near: 1, far: 50 });
+scene.add(sun, sun.target);
+
+// ---------- Build level ----------
+const COLORS = { floor: 0xc8a06a, jump: 0x33c3ff, lava: 0xff4a00, finish: 0x3ddc55 };
+const solids = [];
+const lavas = [];
+const lavaMaterials = [];
+
+for (const b of LEVEL.boxes) {
+  const [x, y, z] = b.p, [w, h, d] = b.s;
+  const box = { t: b.t, minX: x - w / 2, maxX: x + w / 2, minY: y - h / 2, maxY: y + h / 2, minZ: z - d / 2, maxZ: z + d / 2 };
+  const isLava = b.t === 'lava';
+  const mat = new THREE.MeshStandardMaterial({
+    color: COLORS[b.t],
+    roughness: 0.8,
+    emissive: isLava ? 0xff3300 : (b.t === 'jump' ? 0x0a4a66 : 0x000000),
+    emissiveIntensity: isLava ? 0.8 : 1,
+  });
+  if (isLava) lavaMaterials.push(mat);
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+  mesh.position.set(x, y, z);
+  mesh.receiveShadow = true;
+  scene.add(mesh);
+  if (!isLava && w < 50) {
+    const edges = new THREE.LineSegments(new THREE.EdgesGeometry(mesh.geometry), new THREE.LineBasicMaterial({ color: 0x5a3d1c }));
+    edges.position.copy(mesh.position);
+    scene.add(edges);
+  }
+  (isLava ? lavas : solids).push(box);
+}
+
+// Ball with a checker texture so rolling is visible
+function makeBallTexture() {
+  const c = document.createElement('canvas');
+  c.width = 256; c.height = 128;
+  const g = c.getContext('2d');
+  for (let i = 0; i < 8; i++) for (let j = 0; j < 4; j++) {
+    g.fillStyle = (i + j) % 2 ? '#eeeeee' : '#c0392b';
+    g.fillRect(i * 32, j * 32, 32, 32);
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+const ball = new THREE.Mesh(
+  new THREE.SphereGeometry(R, 32, 16),
+  new THREE.MeshStandardMaterial({ map: makeBallTexture(), roughness: 0.4, metalness: 0.1 })
+);
+ball.castShadow = true;
+scene.add(ball);
+
+// Coins
+const coinGeo = new THREE.CylinderGeometry(0.4, 0.4, 0.1, 24);
+coinGeo.rotateX(Math.PI / 2);
+const coinMat = new THREE.MeshStandardMaterial({ color: 0xffcc33, metalness: 0.8, roughness: 0.3, emissive: 0x553300 });
+const coins = LEVEL.coins.map(([x, y, z]) => {
+  const m = new THREE.Mesh(coinGeo, coinMat);
+  m.position.set(x, y, z);
+  m.castShadow = true;
+  scene.add(m);
+  return m;
+});
+
+// Checkpoint flags
+const flags = LEVEL.checkpoints.map(([x, y, z], i) => {
+  const group = new THREE.Group();
+  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 2), new THREE.MeshStandardMaterial({ color: 0xdddddd }));
+  pole.position.y = 1;
+  const cloth = new THREE.Mesh(new THREE.PlaneGeometry(0.8, 0.5), new THREE.MeshStandardMaterial({ color: 0xaaaaaa, side: THREE.DoubleSide }));
+  cloth.position.set(0.4, 1.7, 0);
+  group.add(pole, cloth);
+  group.position.set(x + 1.6, y, z);
+  if (i > 0) scene.add(group);  // no flag at the start
+  return cloth.material;
+});
+
+// ---------- UI helpers ----------
+const $ = (id) => document.getElementById(id);
+let msgTimer = 0;
+function showMsg(text, ms = 1200) {
+  $('msg').textContent = text;
+  $('msg').style.opacity = 1;
+  clearTimeout(msgTimer);
+  msgTimer = setTimeout(() => ($('msg').style.opacity = 0), ms);
+}
+function updateHud() { $('coins').textContent = `🪙 ${collected}/${coins.length}`; }
+
+// ---------- Input: tilt ----------
+const tilt = { x: 0, y: 0, has: false };
+let calib = { x: 0, y: 0 };
+let needCalib = true;
+
+function screenAngle() {
+  if (screen.orientation && typeof screen.orientation.angle === 'number') return screen.orientation.angle;
+  return window.orientation || 0;
+}
+
+function onOrientation(e) {
+  if (e.beta == null || e.gamma == null) return;
+  // Map device axes to screen axes depending on current screen rotation
+  let x, y;
+  switch ((screenAngle() + 360) % 360) {
+    case 90:  x = e.beta;   y = -e.gamma; break;
+    case 270: x = -e.beta;  y = e.gamma;  break;
+    case 180: x = -e.gamma; y = -e.beta;  break;
+    default:  x = e.gamma;  y = e.beta;
+  }
+  tilt.x = x; tilt.y = y; tilt.has = true;
+  if (needCalib) { calib = { x, y }; needCalib = false; }
+}
+window.addEventListener('orientationchange', () => { needCalib = true; });
+
+function shape(deg) {
+  const m = Math.abs(deg);
+  if (m < DEADZONE_DEG) return 0;
+  return Math.sign(deg) * Math.min(1, (m - DEADZONE_DEG) / (MAX_TILT_DEG - DEADZONE_DEG));
+}
+
+// ---------- Input: keyboard (for desktop testing) ----------
+const keys = new Set();
+addEventListener('keydown', (e) => keys.add(e.code));
+addEventListener('keyup', (e) => keys.delete(e.code));
+
+function readInput() {
+  const kx = (keys.has('ArrowRight') || keys.has('KeyD') ? 1 : 0) - (keys.has('ArrowLeft') || keys.has('KeyA') ? 1 : 0);
+  const ky = (keys.has('ArrowDown') || keys.has('KeyS') ? 1 : 0) - (keys.has('ArrowUp') || keys.has('KeyW') ? 1 : 0);
+  if (kx || ky) return { x: kx, y: ky };
+  if (!tilt.has) return { x: 0, y: 0 };
+  // Tilting the top edge away decreases the angle -> negative y -> forward (-Z)
+  return { x: shape(tilt.x - calib.x), y: shape(tilt.y - calib.y) };
+}
+
+// Block page scrolling and pinch zoom on iPad
+document.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
+document.addEventListener('gesturestart', (e) => e.preventDefault());
+
+// ---------- Game state ----------
+const pos = new THREE.Vector3();
+const vel = new THREE.Vector3();
+let grounded = false;
+let groundType = null;
+let jumpCooldown = 0;
+let state = 'menu';       // menu | play | dead | win
+let checkpoint = 0;
+let collected = 0;
+
+function spawnPoint() {
+  const [x, y, z] = LEVEL.checkpoints[checkpoint];
+  return new THREE.Vector3(x, y + R + 0.2, z);
+}
+
+function respawn() {
+  pos.copy(spawnPoint());
+  vel.set(0, 0, 0);
+  grounded = false;
+  snapCamera();
+  state = 'play';
+}
+
+function resetGame() {
+  checkpoint = 0;
+  collected = 0;
+  coins.forEach((c) => (c.visible = true));
+  flags.forEach((m) => m.color.set(0xaaaaaa));
+  updateHud();
+  respawn();
+}
+
+function die(text) {
+  if (state !== 'play') return;
+  state = 'dead';
+  showMsg(text, 900);
+  setTimeout(respawn, 900);
+}
+
+function win() {
+  state = 'win';
+  $('overlay').querySelector('h1').textContent = 'Финиш! 🎉';
+  $('overlayText').textContent = `Монеты: ${collected} из ${coins.length}`;
+  $('startBtn').textContent = 'Ещё раз';
+  $('overlay').style.display = 'flex';
+}
+
+// ---------- Physics ----------
+// Sphere vs axis-aligned box. Pushes the ball out, returns the contact normal Y or null.
+function collide(b) {
+  const cx = Math.max(b.minX, Math.min(pos.x, b.maxX));
+  const cy = Math.max(b.minY, Math.min(pos.y, b.maxY));
+  const cz = Math.max(b.minZ, Math.min(pos.z, b.maxZ));
+  let dx = pos.x - cx, dy = pos.y - cy, dz = pos.z - cz;
+  const d2 = dx * dx + dy * dy + dz * dz;
+  if (d2 >= R * R) return null;
+  let d = Math.sqrt(d2);
+  let nx, ny, nz;
+  if (d < 1e-6) {
+    // Center inside the box: push up as a fallback
+    nx = 0; ny = 1; nz = 0;
+    pos.y = b.maxY + R;
+  } else {
+    nx = dx / d; ny = dy / d; nz = dz / d;
+    const pen = R - d;
+    pos.x += nx * pen; pos.y += ny * pen; pos.z += nz * pen;
+  }
+  const vn = vel.x * nx + vel.y * ny + vel.z * nz;
+  if (vn < 0) {
+    const bounce = vn < -4 ? 0.25 : 0;  // small bounce only on hard impacts
+    const k = vn * (1 + bounce);
+    vel.x -= nx * k; vel.y -= ny * k; vel.z -= nz * k;
+  }
+  return ny;
+}
+
+function touches(b) {
+  const cx = Math.max(b.minX, Math.min(pos.x, b.maxX));
+  const cy = Math.max(b.minY, Math.min(pos.y, b.maxY));
+  const cz = Math.max(b.minZ, Math.min(pos.z, b.maxZ));
+  const dx = pos.x - cx, dy = pos.y - cy, dz = pos.z - cz;
+  return dx * dx + dy * dy + dz * dz < R * R * 0.9;
+}
+
+function physicsStep(dt, inp) {
+  const control = grounded ? 1 : AIR_CONTROL;
+  vel.x += inp.x * TILT_ACCEL * control * dt;
+  vel.z += inp.y * TILT_ACCEL * control * dt;
+  vel.y -= GRAVITY * dt;
+  if (grounded) {
+    const k = Math.max(0, 1 - GROUND_DAMPING * dt);
+    vel.x *= k; vel.z *= k;
+  }
+  pos.addScaledVector(vel, dt);
+
+  grounded = false;
+  groundType = null;
+  for (const b of solids) {
+    const ny = collide(b);
+    if (ny !== null && ny > 0.6) { grounded = true; groundType = b.t; }
+  }
+
+  for (const b of lavas) if (touches(b)) return die('Лава! 🔥');
+  if (pos.y < KILL_Y) return die('Упал!');
+
+  if (grounded && groundType === 'jump' && jumpCooldown <= 0) {
+    vel.y = JUMP_SPEED;
+    jumpCooldown = 0.4;
+    grounded = false;
+  }
+  if (grounded && groundType === 'finish') win();
+}
+
+function checkPickups() {
+  for (const c of coins) {
+    if (c.visible && c.position.distanceTo(pos) < 1.0) {
+      c.visible = false;
+      collected++;
+      updateHud();
+    }
+  }
+  LEVEL.checkpoints.forEach(([x, y, z], i) => {
+    if (i > checkpoint && Math.hypot(pos.x - x, pos.z - z) < 2 && Math.abs(pos.y - y) < 2) {
+      checkpoint = i;
+      flags[i].color.set(0x3ddc55);
+      showMsg('Чекпоинт ✔');
+    }
+  });
+}
+
+// ---------- Camera ----------
+const CAM_OFFSET = new THREE.Vector3(0, 5.5, 8);
+const camWanted = new THREE.Vector3();
+function snapCamera() {
+  camera.position.copy(pos).add(CAM_OFFSET);
+  camera.lookAt(pos.x, pos.y, pos.z - 3);
+}
+function updateCamera(dt) {
+  camWanted.copy(pos).add(CAM_OFFSET);
+  if (state === 'dead') camWanted.y = Math.max(camWanted.y, camera.position.y - 1); // don't dive into lava
+  camera.position.lerp(camWanted, 1 - Math.exp(-5 * dt));
+  camera.lookAt(pos.x, pos.y, pos.z - 3);
+  sun.position.set(pos.x + 6, pos.y + 14, pos.z + 4);
+  sun.target.position.copy(pos);
+}
+
+// ---------- Main loop ----------
+const qStep = new THREE.Quaternion();
+const axis = new THREE.Vector3();
+let last = performance.now();
+let time = 0;
+
+function frame(now) {
+  const dt = Math.min((now - last) / 1000, 1 / 20);
+  last = now;
+  time += dt;
+
+  if (state === 'play' || state === 'dead') {
+    jumpCooldown -= dt;
+    const inp = state === 'play' ? readInput() : { x: 0, y: 0 };
+    const h = dt / SUBSTEPS;
+    for (let i = 0; i < SUBSTEPS && (state === 'play' || state === 'dead'); i++) physicsStep(h, inp);
+    if (state === 'play') checkPickups();
+
+    // Visual rolling: angular velocity = (vz, 0, -vx) / R
+    const vh = Math.hypot(vel.x, vel.z);
+    if (vh > 1e-3) {
+      axis.set(vel.z, 0, -vel.x).normalize();
+      qStep.setFromAxisAngle(axis, (vh * dt) / R);
+      ball.quaternion.premultiply(qStep);
+    }
+  }
+
+  ball.position.copy(pos);
+  coins.forEach((c, i) => { c.rotation.y = time * 2 + i; });
+  lavaMaterials.forEach((m) => { m.emissiveIntensity = 0.7 + 0.25 * Math.sin(time * 3); });
+  updateCamera(dt);
+  renderer.render(scene, camera);
+  requestAnimationFrame(frame);
+}
+
+// ---------- Start / buttons ----------
+let sensorsReady = false;
+
+async function enableSensors() {
+  if (sensorsReady) return;
+  sensorsReady = true;
+  try {
+    // iOS requires explicit permission, requested from a user tap
+    if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+      const res = await DeviceOrientationEvent.requestPermission();
+      if (res !== 'granted') { showMsg('Нет доступа к наклону', 2500); return; }
+    }
+    window.addEventListener('deviceorientation', onOrientation);
+  } catch (err) {
+    showMsg('Наклон недоступен (нужен HTTPS)', 2500);
+  }
+  // Keep the screen awake while playing
+  try { if ('wakeLock' in navigator) await navigator.wakeLock.request('screen'); } catch (err) { /* ignore */ }
+}
+
+$('startBtn').addEventListener('click', async () => {
+  await enableSensors();
+  if (state === 'win' || state === 'menu') resetGame();
+  needCalib = true;
+  $('overlay').style.display = 'none';
+});
+
+$('calibBtn').addEventListener('click', () => { needCalib = true; showMsg('Калибровка ✔', 800); });
+$('restartBtn').addEventListener('click', () => { if (state !== 'menu' && state !== 'win') resetGame(); });
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+pos.copy(spawnPoint());
+snapCamera();
+updateHud();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
