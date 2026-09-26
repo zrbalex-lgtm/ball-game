@@ -69,6 +69,7 @@
   <div id="menuPanel" class="panel">
     <h1>Шарик</h1>
     <p>Наклоняй iPad, чтобы катить шарик по лабиринту над лавой. Монеты спрятаны в тупиках. Синие площадки со стрелками перебрасывают через пропасть.</p>
+    <p class="muted">На компьютере: <b>W A S D</b> или стрелки, <b>Shift</b> — медленно и точно, <b>R</b> — вернуться на платформу.</p>
     <input id="nameInput" placeholder="Твоё имя" maxlength="14" autocomplete="off">
     <button id="soloBtn">Играть одному</button>
     <button class="ghost" id="resetProgressBtn" style="display:none">Одному — начать с 1 уровня</button>
@@ -785,15 +786,35 @@ function shape(deg) {
   return Math.sign(deg) * Math.min(1, (m - DEADZONE_DEG) / (MAX_TILT_DEG - DEADZONE_DEG));
 }
 
-// ---------- Input: keyboard (for desktop testing) ----------
+// ---------- Input: keyboard (computer) ----------
+// WASD / arrows move the ball, Shift = slow and precise, R = back to the last platform.
+// e.code is layout independent, so it also works with the Russian keyboard layout.
 const keys = new Set();
-addEventListener('keydown', (e) => keys.add(e.code));
+const GAME_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'ShiftLeft', 'ShiftRight', 'KeyR', 'Space']);
+const isTyping = (e) => e.target && ['INPUT', 'SELECT', 'TEXTAREA'].includes(e.target.tagName);
+addEventListener('keydown', (e) => {
+  if (isTyping(e) || !GAME_KEYS.has(e.code)) return;
+  e.preventDefault();  // no page scrolling with arrows or space
+  if (e.code === 'KeyR' && !e.repeat && state === 'play') { respawn(); return; }
+  keys.add(e.code);
+});
 addEventListener('keyup', (e) => keys.delete(e.code));
+addEventListener('blur', () => keys.clear());  // avoid stuck keys after switching windows
+
+const kbd = { x: 0, y: 0 };
+const KBD_RAMP = 7;  // how fast keyboard input reaches full strength (per second)
+function updateKeyboard(dt) {
+  const tx = (keys.has('ArrowRight') || keys.has('KeyD') ? 1 : 0) - (keys.has('ArrowLeft') || keys.has('KeyA') ? 1 : 0);
+  const ty = (keys.has('ArrowDown') || keys.has('KeyS') ? 1 : 0) - (keys.has('ArrowUp') || keys.has('KeyW') ? 1 : 0);
+  const k = keys.has('ShiftLeft') || keys.has('ShiftRight') ? 0.45 : 1;
+  const step = KBD_RAMP * dt;
+  const approach = (v, t) => (Math.abs(t - v) <= step ? t : v + Math.sign(t - v) * step);
+  kbd.x = approach(kbd.x, tx * k);
+  kbd.y = approach(kbd.y, ty * k);
+}
 
 function readInput() {
-  const kx = (keys.has('ArrowRight') || keys.has('KeyD') ? 1 : 0) - (keys.has('ArrowLeft') || keys.has('KeyA') ? 1 : 0);
-  const ky = (keys.has('ArrowDown') || keys.has('KeyS') ? 1 : 0) - (keys.has('ArrowUp') || keys.has('KeyW') ? 1 : 0);
-  if (kx || ky) return { x: kx, y: ky };
+  if (kbd.x || kbd.y) return { x: kbd.x, y: kbd.y };
   if (!tilt.has) return { x: 0, y: 0 };
   // Tilting the top edge away decreases the angle -> negative y -> forward (-Z)
   return { x: shape(tilt.x - calib.x), y: shape(tilt.y - calib.y) };
@@ -1039,6 +1060,7 @@ function frame(now) {
 
   if (state === 'play' || state === 'dead') {
     jumpCooldown -= dt;
+    updateKeyboard(dt);
     const inp = state === 'play' ? readInput() : { x: 0, y: 0 };
     const h = dt / SUBSTEPS;
     for (let i = 0; i < SUBSTEPS && (state === 'play' || state === 'dead'); i++) physicsStep(h, inp);
@@ -1086,6 +1108,7 @@ async function enableSensors() {
 // ---------- Screens ----------
 function showPanel(name) {
   $('overlay').style.display = name ? 'flex' : 'none';
+  if (!name && document.activeElement && document.activeElement.blur) document.activeElement.blur();
   $('menuPanel').classList.toggle('hidden', name !== 'menu');
   $('lobbyPanel').classList.toggle('hidden', name !== 'lobby');
 }
