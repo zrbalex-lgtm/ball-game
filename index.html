@@ -29,6 +29,28 @@
   #overlay p { margin: 0; max-width: 460px; opacity: .9; line-height: 1.45; font-size: 17px; }
   #msg { position: fixed; top: 36%; left: 16px; right: 16px; text-align: center; font-size: clamp(26px, 5vw, 44px);
     font-weight: 800; text-shadow: 0 2px 8px #000; pointer-events: none; opacity: 0; transition: opacity .25s; }
+  .panel { display: flex; flex-direction: column; align-items: center; gap: 14px; width: 100%; max-width: 440px; }
+  .hidden { display: none !important; }
+  .row { display: flex; gap: 10px; width: 100%; }
+  .row > * { flex: 1; }
+  .blue { background: #3aa0ff; color: #fff; }
+  .sep { width: 100%; border-top: 1px solid rgba(255,255,255,.2); margin: 4px 0; }
+  input, select { font: inherit; font-size: 19px; padding: 11px 14px; border-radius: 12px; border: 0;
+    background: #fff; color: #222; -webkit-user-select: text; user-select: text; min-width: 0; }
+  #codeInput { text-transform: uppercase; letter-spacing: 3px; text-align: center; }
+  .err { color: #ff8a7a !important; min-height: 1em; }
+  .muted { opacity: .7; font-size: 14px !important; word-break: break-all; }
+  #roomCode { letter-spacing: 4px; color: #ffb020; }
+  #playerList, #resultsList { list-style: none; margin: 0; padding: 0; width: 100%; text-align: left; }
+  #playerList li, #resultsList li { display: flex; align-items: center; gap: 10px; padding: 8px 12px;
+    background: rgba(255,255,255,.08); border-radius: 10px; margin-bottom: 6px; font-size: 18px; }
+  .dot { width: 14px; height: 14px; border-radius: 50%; flex: none; }
+  .score { margin-left: auto; font-weight: 800; }
+  #board { position: fixed; left: 16px; top: calc(env(safe-area-inset-top, 0px) + 58px); pointer-events: none;
+    font-size: 16px; font-weight: 700; text-shadow: 0 1px 3px #000; background: rgba(10,12,24,.45);
+    border-radius: 10px; padding: 6px 10px; min-width: 140px; }
+  #board div { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
+  label { font-size: 16px; display: flex; flex-direction: column; gap: 4px; align-items: stretch; }
 </style>
 </head>
 <body>
@@ -39,14 +61,61 @@
     <button class="small" id="restartBtn">↺ Заново</button>
   </span>
 </div>
+<div id="board" class="hidden"></div>
 <canvas id="minimap"></canvas>
 <div id="msg"></div>
 <div id="overlay">
-  <h1>Шарик</h1>
-  <p>Наклоняй iPad, чтобы катить шарик по лабиринту над лавой. Собери <b>все</b> монеты — они спрятаны в тупиках — и доберись до клетчатого финиша. Синие площадки со стрелками перебрасывают через пропасть.<br><br>Держи iPad так, как удобно играть, и нажми «Старт».</p>
-  <button id="startBtn">Старт</button>
-  <button class="ghost" id="resetProgressBtn" style="display:none">Начать с 1 уровня</button>
+  <div id="menuPanel" class="panel">
+    <h1>Шарик</h1>
+    <p>Наклоняй iPad, чтобы катить шарик по лабиринту над лавой. Монеты спрятаны в тупиках. Синие площадки со стрелками перебрасывают через пропасть.</p>
+    <input id="nameInput" placeholder="Твоё имя" maxlength="14" autocomplete="off">
+    <button id="soloBtn">Играть одному</button>
+    <button class="ghost" id="resetProgressBtn" style="display:none">Одному — начать с 1 уровня</button>
+    <div class="sep"></div>
+    <button id="hostBtn" class="blue">Создать игру по сети</button>
+    <div class="row">
+      <input id="codeInput" placeholder="КОД" maxlength="5" autocomplete="off">
+      <button id="joinBtn" class="blue">Войти</button>
+    </div>
+    <p id="menuErr" class="err"></p>
+  </div>
+
+  <div id="lobbyPanel" class="panel hidden">
+    <div id="resultsBlock" class="panel hidden">
+      <h1 id="winnerTitle"></h1>
+      <ol id="resultsList"></ol>
+      <div class="sep"></div>
+    </div>
+    <h2 style="margin:0">Комната <span id="roomCode"></span></h2>
+    <p class="muted" id="roomLink"></p>
+    <button class="small" id="shareBtn">📤 Отправить ссылку</button>
+    <ul id="playerList"></ul>
+    <div id="hostControls" class="panel">
+      <div class="row">
+        <label>Лабиринт
+          <select id="sizeSel">
+            <option value="3">Маленький</option>
+            <option value="6" selected>Средний</option>
+            <option value="10">Большой</option>
+          </select>
+        </label>
+        <label>Время
+          <select id="timeSel">
+            <option value="120">2 мин</option>
+            <option value="180" selected>3 мин</option>
+            <option value="300">5 мин</option>
+          </select>
+        </label>
+      </div>
+      <button id="startRoundBtn">Начать раунд</button>
+    </div>
+    <p id="lobbyWait">Ждём, пока создатель комнаты начнёт раунд…</p>
+    <button class="ghost" id="leaveBtn">Выйти</button>
+  </div>
 </div>
+
+<!-- PeerJS: direct device-to-device connections; its free public server only helps devices find each other -->
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
 
 <script type="importmap">
 { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
@@ -268,12 +337,12 @@ function skyCanvas() {
   return c;
 }
 
-function ballCanvas() {
+function ballCanvas(color = '#c0392b') {
   const c = document.createElement('canvas');
   c.width = 256; c.height = 128;
   const g = c.getContext('2d');
   for (let i = 0; i < 8; i++) for (let j = 0; j < 4; j++) {
-    g.fillStyle = (i + j) % 2 ? '#eeeeee' : '#c0392b';
+    g.fillStyle = (i + j) % 2 ? '#eeeeee' : color;
     g.fillRect(i * 32, j * 32, 32, 32);
   }
   return c;
@@ -332,12 +401,38 @@ for (const [key, angle] of [['1,0', Math.PI / 2], ['-1,0', -Math.PI / 2], ['0,1'
   padMats[key] = new THREE.MeshStandardMaterial({ map: toTexture(padCanvas(angle), false), roughness: 0.5, emissive: 0x0a3050 });
 }
 
-const ball = new THREE.Mesh(
-  new THREE.SphereGeometry(R, 32, 16),
-  new THREE.MeshStandardMaterial({ map: toTexture(ballCanvas(), false), roughness: 0.4, metalness: 0.1 })
-);
+const ballGeo = new THREE.SphereGeometry(R, 32, 16);
+const ballMats = {};
+function ballMaterial(color) {
+  if (!ballMats[color]) ballMats[color] = new THREE.MeshStandardMaterial({ map: toTexture(ballCanvas(color), false), roughness: 0.4, metalness: 0.1 });
+  return ballMats[color];
+}
+const SOLO_COLOR = '#c0392b';
+const ball = new THREE.Mesh(ballGeo, ballMaterial(SOLO_COLOR));
 ball.castShadow = true;
 scene.add(ball);
+
+// Floating name tag above a remote player's ball
+function makeLabel(name, color) {
+  const c = document.createElement('canvas');
+  c.width = 256; c.height = 64;
+  const g = c.getContext('2d');
+  g.font = 'bold 34px -apple-system, system-ui, sans-serif';
+  const w = Math.min(248, g.measureText(name).width + 36);
+  g.fillStyle = 'rgba(0,0,0,0.55)';
+  g.beginPath();
+  g.roundRect ? g.roundRect(128 - w / 2, 6, w, 52, 18) : g.rect(128 - w / 2, 6, w, 52);
+  g.fill();
+  g.fillStyle = color;
+  g.beginPath(); g.arc(128 - w / 2 + 18, 32, 8, 0, Math.PI * 2); g.fill();
+  g.fillStyle = '#fff';
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillText(name, 128 + 8, 33);
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: toTexture(c, false), depthTest: false }));
+  sprite.scale.set(2.6, 0.65, 1);
+  sprite.renderOrder = 10;
+  return sprite;
+}
 
 const coinGeo = new THREE.CylinderGeometry(0.4, 0.4, 0.1, 24);
 coinGeo.rotateX(Math.PI / 2);
@@ -355,7 +450,8 @@ function difficulty(L) {
   };
 }
 
-function generateMaze(L, seed) {
+// mp = multiplayer round: no finish, coins in every dead end
+function generateMaze(L, seed, mp = false) {
   const rng = mulberry32(seed);
   const D = difficulty(L);
   const { cols, rows } = D;
@@ -396,6 +492,9 @@ function generateMaze(L, seed) {
   }
   let finish = start;
   for (let c = 0; c < N; c++) if (dist[c] > dist[finish]) finish = c;
+  if (mp) finish = -1;
+  const maxCoins = mp ? 40 : D.maxCoins;
+  const minCoins = mp ? 6 : 2;
 
   const cells = Array.from({ length: N }, (_, c) => ({
     x: ((c % cols) - (cols - 1) / 2) * CELL,
@@ -424,10 +523,10 @@ function generateMaze(L, seed) {
   const leaves = [];
   for (let c = 0; c < N; c++) if (adj[c].length === 1 && !special(c)) leaves.push(c);
   leaves.sort((p, q) => dist[q] - dist[p]);
-  const coinCells = leaves.slice(0, D.maxCoins);
-  if (coinCells.length < 2) {
+  const coinCells = leaves.slice(0, maxCoins);
+  if (coinCells.length < minCoins) {
     const rest = [...Array(N).keys()].filter((c) => !special(c) && !coinCells.includes(c)).sort((p, q) => dist[q] - dist[p]);
-    while (coinCells.length < 2 && rest.length) coinCells.push(rest.shift());
+    while (coinCells.length < minCoins && rest.length) coinCells.push(rest.shift());
   }
   coinCells.forEach((c) => (cells[c].coin = true));
 
@@ -518,11 +617,13 @@ function buildLevel(m) {
     }
   }
 
-  const F = m.cells[m.finish];
-  const fb = addBox([F.x, 0.05, F.z], [2.2, 0.1, 2.2], withTop(MAT.finish, MAT.padSide));
-
   // Pads and finish go last so they win when the ball touches several boxes
-  solids.push(...pads, { ...fb, t: 'finish', cell: m.finish });
+  solids.push(...pads);
+  if (m.finish >= 0) {
+    const F = m.cells[m.finish];
+    const fb = addBox([F.x, 0.05, F.z], [2.2, 0.1, 2.2], withTop(MAT.finish, MAT.padSide));
+    solids.push({ ...fb, t: 'finish', cell: m.finish });
+  }
 
   // Lava sea under the whole maze
   const xs = m.cells.map((c) => c.x), zs = m.cells.map((c) => c.z);
@@ -543,7 +644,20 @@ function showMsg(text, ms = 1200) {
   clearTimeout(msgTimer);
   msgTimer = setTimeout(() => ($('msg').style.opacity = 0), ms);
 }
-function updateHud() { $('info').textContent = `Ур. ${level} · 🪙 ${collected}/${coins.length}`; }
+let hudText = '';
+function updateHud() {
+  let t;
+  if (mode === 'solo') {
+    t = `Ур. ${level} · 🪙 ${collected}/${coins.length}`;
+  } else if (round) {
+    const left = Math.max(0, Math.ceil((round.endAt - performance.now()) / 1000));
+    const free = round.owners.filter((o) => o == null).length;
+    t = `⏱ ${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')} · 🪙 осталось ${free}`;
+  } else {
+    t = 'Комната ' + roomCode;
+  }
+  if (t !== hudText) { hudText = t; $('info').textContent = t; }
+}
 
 function loadSavedLevel() {
   try { const v = parseInt(localStorage.getItem('ballLevel'), 10); return v > 0 ? v : 1; } catch (e) { return 1; }
@@ -601,13 +715,17 @@ function drawMinimap() {
     mctx.arc(mmX(coin.position.x), mmY(coin.position.z), Math.max(2.5, s * 0.6), 0, Math.PI * 2);
     mctx.fill();
   }
-  mctx.fillStyle = '#ff3030';
-  mctx.strokeStyle = '#fff';
-  mctx.lineWidth = 1.5;
-  mctx.beginPath();
-  mctx.arc(mmX(pos.x), mmY(pos.z), Math.max(3, s * 0.7), 0, Math.PI * 2);
-  mctx.fill();
-  mctx.stroke();
+  const dot = (x, z, color, own) => {
+    mctx.fillStyle = color;
+    mctx.strokeStyle = own ? '#fff' : 'rgba(0,0,0,.6)';
+    mctx.lineWidth = own ? 2 : 1;
+    mctx.beginPath();
+    mctx.arc(mmX(x), mmY(z), Math.max(own ? 3.5 : 3, s * 0.7), 0, Math.PI * 2);
+    mctx.fill();
+    mctx.stroke();
+  };
+  for (const p of players.values()) if (p.mesh && p.mesh.visible) dot(p.mesh.position.x, p.mesh.position.z, p.color, false);
+  dot(pos.x, pos.z, myColor(), true);
 }
 
 // ---------- Input: tilt ----------
@@ -665,15 +783,30 @@ const vel = new THREE.Vector3();
 let grounded = false;
 let groundBox = null;
 let jumpCooldown = 0;
-let state = 'menu';       // menu | play | dead | transition
+let state = 'menu';       // menu | countdown | play | dead | transition
 let lastCell = 0;
 let collected = 0;
 const baseSeed = Math.floor(Math.random() * 1e9);
 
+// Network state (see the Network section below)
+let mode = 'solo';        // solo | host | guest
+let myId = 'h';
+let roomCode = '';
+let round = null;         // current multiplayer round: { seed, size, owners, startAt, endAt, phase }
+const players = new Map(); // id -> { id, name, color, score, mesh, label, target, vel, hasPos }
+const PALETTE = ['#e74c3c', '#3498db', '#2ecc71', '#f1c40f', '#9b59b6', '#e67e22', '#1abc9c', '#ff66cc'];
+const myColor = () => (mode === 'solo' ? SOLO_COLOR : (players.get(myId) || { color: SOLO_COLOR }).color);
+
 function spawnPoint(c) {
   const cell = maze.cells[c];
   let x = cell.x, z = cell.z;
-  if (cell.lava) {
+  if (mode !== 'solo' && c === maze.start) {
+    // Spread players around the start platform so they don't spawn inside each other
+    const ids = [...players.keys()];
+    const i = Math.max(0, ids.indexOf(myId));
+    x += Math.cos(i * Math.PI / 4) * 1.2;
+    z += Math.sin(i * Math.PI / 4) * 1.2;
+  } else if (cell.lava) {
     // Spawn on the ring next to a bridge instead of in the lava hole
     const n = maze.cells[cell.adj[0]];
     x += Math.sign(n.x - cell.x) * 1.35;
@@ -693,6 +826,7 @@ function respawn() {
 // Builds a level; the same level number always gives the same layout within a session
 function loadLevel(n) {
   level = n;
+  ball.material = ballMaterial(SOLO_COLOR);
   maze = generateMaze(level, baseSeed + level * 7919);
   buildLevel(maze);
   collected = 0;
@@ -775,6 +909,19 @@ function physicsStep(dt, inp) {
     if (ny !== null && ny > 0.6) { grounded = true; groundBox = b; }
   }
 
+  // Bump into other players: only our own ball is moved, each device does the same for itself
+  for (const p of players.values()) {
+    if (!p.mesh || !p.mesh.visible) continue;
+    const q = p.mesh.position;
+    const dx = pos.x - q.x, dy = pos.y - q.y, dz = pos.z - q.z;
+    const d = Math.hypot(dx, dy, dz);
+    if (d >= 2 * R || d < 1e-4) continue;
+    const nx = dx / d, ny = dy / d, nz = dz / d;
+    pos.x += nx * (2 * R - d); pos.y += ny * (2 * R - d); pos.z += nz * (2 * R - d);
+    const vr = (vel.x - p.vel.x) * nx + (vel.y - p.vel.y) * ny + (vel.z - p.vel.z) * nz;
+    if (vr < 0) { vel.x -= nx * vr * 1.1; vel.y -= ny * vr * 1.1; vel.z -= nz * vr * 1.1; }
+  }
+
   for (const b of lavas) if (touches(b)) return die('Лава! 🔥');
   if (pos.y < KILL_Y) return die('Упал!');
   if (!grounded) return;
@@ -794,13 +941,19 @@ function physicsStep(dt, inp) {
 }
 
 function checkPickups() {
-  for (const c of coins) {
-    if (c.visible && c.position.distanceTo(pos) < 1.0) {
-      c.visible = false;
-      collected++;
-      updateHud();
-      showMsg(collected === coins.length ? 'Все монеты! Теперь к финишу 🏁' : '🪙', collected === coins.length ? 1800 : 500);
+  for (let i = 0; i < coins.length; i++) {
+    const c = coins[i];
+    if (!c.visible || c.position.distanceTo(pos) >= 1.0) continue;
+    c.visible = false;
+    if (mode !== 'solo') {
+      // Hide right away; the host decides who actually got the coin
+      if (mode === 'host') claimCoin(i, myId);
+      else sendToHost({ t: 'pick', c: i });
+      continue;
     }
+    collected++;
+    updateHud();
+    showMsg(collected === coins.length ? 'Все монеты! Теперь к финишу 🏁' : '🪙', collected === coins.length ? 1800 : 500);
   }
 }
 
@@ -830,6 +983,19 @@ function frame(now) {
   const dt = Math.min((now - last) / 1000, 1 / 20);
   last = now;
   time += dt;
+
+  if (state === 'countdown' && round) {
+    const left = round.startAt - now;
+    if (left <= 0) { state = 'play'; showMsg('Вперёд!', 700); }
+    else {
+      const n = Math.ceil(left / 1000);
+      if (n !== countdownShown) { countdownShown = n; showMsg(String(n), 900); }
+    }
+  }
+  if (mode === 'host' && round && round.phase === 'play' &&
+      (now >= round.endAt || round.owners.every((o) => o != null))) endRound();
+  if (mode !== 'solo') updateRemotes(dt);
+  updateHud();
 
   if (state === 'play' || state === 'dead') {
     jumpCooldown -= dt;
@@ -877,23 +1043,395 @@ async function enableSensors() {
   try { if ('wakeLock' in navigator) await navigator.wakeLock.request('screen'); } catch (err) { /* ignore */ }
 }
 
-$('startBtn').addEventListener('click', async () => {
-  await enableSensors();
+// ---------- Screens ----------
+function showPanel(name) {
+  $('overlay').style.display = name ? 'flex' : 'none';
+  $('menuPanel').classList.toggle('hidden', name !== 'menu');
+  $('lobbyPanel').classList.toggle('hidden', name !== 'lobby');
+}
+function showMenu(error = '') {
+  state = 'menu';
+  $('menuErr').textContent = error;
+  const saved = loadSavedLevel();
+  $('soloBtn').textContent = saved > 1 ? `Играть одному (уровень ${saved})` : 'Играть одному';
+  $('resetProgressBtn').style.display = saved > 1 ? 'block' : 'none';
+  $('board').classList.add('hidden');
+  showPanel('menu');
+}
+function getName() {
+  const n = $('nameInput').value.trim().slice(0, 14);
+  if (n) { try { localStorage.setItem('ballName', n); } catch (e) { /* ignore */ } }
+  return n;
+}
+const esc = (s) => String(s).replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+const roomLink = () => `${location.origin}${location.pathname}?room=${roomCode}`;
+
+function sortedPlayers() {
+  return [...players.values()].sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
+}
+function renderPlayers() {
+  const rows = sortedPlayers().map((p) =>
+    `<li><span class="dot" style="background:${p.color}"></span>${esc(p.name)}${p.id === myId ? ' (ты)' : ''}` +
+    (round ? `<span class="score">${p.score} 🪙</span>` : '') + '</li>');
+  $('playerList').innerHTML = rows.join('');
+  $('board').innerHTML = sortedPlayers().map((p) =>
+    `<div><span class="dot" style="background:${p.color}"></span>${esc(p.name)}<span class="score">${p.score}</span></div>`).join('');
+}
+function showLobby(results) {
+  state = 'menu';
+  $('roomCode').textContent = roomCode;
+  $('roomLink').textContent = roomLink();
+  $('hostControls').classList.toggle('hidden', mode !== 'host');
+  $('lobbyWait').classList.toggle('hidden', mode === 'host');
+  $('startRoundBtn').textContent = results ? 'Ещё раунд' : 'Начать раунд';
+  $('resultsBlock').classList.toggle('hidden', !results);
+  if (results) {
+    const best = results.length ? results[0].score : 0;
+    const winners = results.filter((r) => r.score === best);
+    $('winnerTitle').textContent = best === 0 ? 'Никто не собрал монет' :
+      winners.length > 1 ? `Ничья! 🤝 ${winners.map((w) => w.name).join(', ')}` : `🏆 ${winners[0].name}`;
+    $('resultsList').innerHTML = results.map((r, i) =>
+      `<li>${i + 1}. <span class="dot" style="background:${r.color}"></span>${esc(r.name)}<span class="score">${r.score} 🪙</span></li>`).join('');
+  }
+  $('board').classList.add('hidden');
+  renderPlayers();
+  showPanel('lobby');
+}
+
+// ---------- Remote players ----------
+function upsertPlayer(info) {
+  let p = players.get(info.id);
+  if (!p) {
+    p = { id: info.id, target: new THREE.Vector3(), vel: new THREE.Vector3(), hasPos: false, mesh: null, label: null };
+    players.set(info.id, p);
+  }
+  const changed = p.name !== info.name || p.color !== info.color;
+  p.name = info.name; p.color = info.color; p.score = info.score || 0;
+  if (info.id !== myId && (changed || !p.mesh)) {
+    removeMeshes(p);
+    p.mesh = new THREE.Mesh(ballGeo, ballMaterial(p.color));
+    p.mesh.castShadow = true;
+    p.mesh.visible = false;
+    p.label = makeLabel(p.name, p.color);
+    p.label.visible = false;
+    scene.add(p.mesh, p.label);
+  }
+  if (info.id === myId) ball.material = ballMaterial(p.color);
+  return p;
+}
+function removeMeshes(p) {
+  if (p.mesh) scene.remove(p.mesh);
+  if (p.label) { scene.remove(p.label); p.label.material.map.dispose(); p.label.material.dispose(); }
+  p.mesh = p.label = null;
+}
+function syncPlayers(list) {
+  const ids = new Set(list.map((i) => i.id));
+  for (const [id, p] of players) if (!ids.has(id)) { removeMeshes(p); players.delete(id); }
+  list.forEach(upsertPlayer);
+  renderPlayers();
+}
+function clearPlayers() {
+  for (const p of players.values()) removeMeshes(p);
+  players.clear();
+}
+function updateRemotes(dt) {
+  const active = round && round.phase === 'play';
+  const k = 1 - Math.exp(-12 * dt);
+  for (const p of players.values()) {
+    if (!p.mesh) continue;
+    const show = active && p.hasPos;
+    p.mesh.visible = p.label.visible = show;
+    if (!show) continue;
+    p.mesh.position.lerp(p.target, k);
+    const vh = Math.hypot(p.vel.x, p.vel.z);
+    if (vh > 1e-3) {
+      axis.set(p.vel.z, 0, -p.vel.x).normalize();
+      qStep.setFromAxisAngle(axis, (vh * dt) / R);
+      p.mesh.quaternion.premultiply(qStep);
+    }
+    p.label.position.set(p.mesh.position.x, p.mesh.position.y + 1.1, p.mesh.position.z);
+  }
+}
+function setRemoteState(id, a) {
+  const p = players.get(id);
+  if (!p || id === myId) return;
+  p.target.set(a[0], a[1], a[2]);
+  p.vel.set(a[3], a[4], a[5]);
+  if (!p.hasPos && p.mesh) p.mesh.position.copy(p.target);
+  p.hasPos = true;
+}
+const r2 = (x) => Math.round(x * 100) / 100;
+const myState = () => [r2(pos.x), r2(pos.y), r2(pos.z), r2(vel.x), r2(vel.y), r2(vel.z)];
+
+// ---------- Rounds ----------
+let countdownShown = 0;
+function startRoundLocal(r) {
+  const now = performance.now();
+  round = { seed: r.seed, size: r.size, owners: r.owners.slice(), phase: 'play',
+            startAt: now + r.startIn, endAt: now + r.timeLeft };
+  maze = generateMaze(r.size, r.seed, true);
+  buildLevel(maze);
+  round.owners.forEach((o, i) => { if (o != null && coins[i]) coins[i].visible = false; });
+  for (const p of players.values()) p.hasPos = false;
+  lastCell = maze.start;
+  respawn();
+  countdownShown = 0;
+  state = r.startIn > 0 ? 'countdown' : 'play';
   needCalib = true;
-  $('overlay').style.display = 'none';
+  showPanel(null);
+  $('board').classList.remove('hidden');
+  renderPlayers();
+}
+function applyCoin(c, by) {
+  if (!round) return;
+  round.owners[c] = by;
+  if (coins[c]) coins[c].visible = false;
+  if (by === myId) showMsg('+1 🪙', 500);
+}
+
+// ---------- Network (PeerJS) ----------
+const PEER_PREFIX = 'sharik-ballmaze-';
+let peer = null;
+let hostConn = null;
+const guestConns = new Map();
+let netTimer = 0;
+let joinTimeout = 0;
+
+function randomCode() {
+  const A = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+  let s = '';
+  for (let i = 0; i < 5; i++) s += A[Math.floor(Math.random() * A.length)];
+  return s;
+}
+function peerAvailable() {
+  if (typeof Peer === 'undefined') { showMenu('Не загрузилась сетевая библиотека. Проверь интернет.'); return false; }
+  return true;
+}
+function leaveNet(error) {
+  if (mode === 'solo') return;
+  mode = 'solo';  // set first so close/error events fired while tearing down are ignored
+  clearInterval(netTimer);
+  clearTimeout(joinTimeout);
+  try { if (hostConn) hostConn.close(); } catch (e) { /* ignore */ }
+  for (const c of guestConns.values()) { try { c.close(); } catch (e) { /* ignore */ } }
+  guestConns.clear();
+  try { if (peer) peer.destroy(); } catch (e) { /* ignore */ }
+  peer = hostConn = null;
+  clearPlayers();
+  round = null;
+  loadLevel(loadSavedLevel());
+  showMenu(error || '');
+}
+function startNetLoop() {
+  clearInterval(netTimer);
+  // ~15 position updates per second
+  netTimer = setInterval(() => {
+    const moving = state === 'play' || state === 'dead' || state === 'countdown';
+    if (mode === 'guest' && moving) sendToHost({ t: 'pos', s: myState() });
+    if (mode === 'host' && round && round.phase === 'play') {
+      const all = {};
+      for (const p of players.values()) if (p.id !== myId && p.hasPos) {
+        all[p.id] = [r2(p.target.x), r2(p.target.y), r2(p.target.z), r2(p.vel.x), r2(p.vel.y), r2(p.vel.z)];
+      }
+      if (moving) all[myId] = myState();
+      broadcast({ t: 'state', all });
+    }
+  }, 66);
+}
+
+// Host side
+function playerList() {
+  return [...players.values()].map((p) => ({ id: p.id, name: p.name, color: p.color, score: p.score }));
+}
+function broadcast(msg) {
+  for (const c of guestConns.values()) if (c.open) { try { c.send(msg); } catch (e) { /* ignore */ } }
+}
+function broadcastPlayers() {
+  broadcast({ t: 'players', list: playerList() });
+  renderPlayers();
+}
+function roundSnapshot() {
+  if (!round) return { phase: 'lobby' };
+  if (round.phase === 'over') return { phase: 'over', results: round.results };
+  const now = performance.now();
+  return { phase: 'play', seed: round.seed, size: round.size, owners: round.owners,
+           startIn: Math.max(0, round.startAt - now), timeLeft: Math.max(0, round.endAt - now) };
+}
+function freeColor() {
+  const used = new Set([...players.values()].map((p) => p.color));
+  return PALETTE.find((c) => !used.has(c)) || PALETTE[players.size % PALETTE.length];
+}
+function startHosting(name) {
+  if (!peerAvailable()) return;
+  mode = 'host';
+  myId = 'h';
+  clearPlayers();
+  upsertPlayer({ id: myId, name, color: PALETTE[0], score: 0 });
+  $('menuErr').textContent = 'Создаю комнату…';
+  const tryOpen = (attempt) => {
+    roomCode = randomCode();
+    peer = new Peer(PEER_PREFIX + roomCode);
+    peer.on('open', () => { $('menuErr').textContent = ''; startNetLoop(); showLobby(); });
+    peer.on('connection', onGuestConnection);
+    peer.on('disconnected', () => { try { peer.reconnect(); } catch (e) { /* ignore */ } });
+    peer.on('error', (err) => {
+      if (mode !== 'host') return;
+      if (err.type === 'unavailable-id' && attempt < 3) { peer.destroy(); tryOpen(attempt + 1); }
+      else if (err.type !== 'peer-unavailable') leaveNet('Ошибка сети: ' + err.type);
+    });
+  };
+  tryOpen(0);
+}
+function onGuestConnection(conn) {
+  conn.on('data', (d) => hostHandle(conn, d));
+  const gone = () => {
+    guestConns.delete(conn.peer);
+    const p = players.get(conn.peer);
+    if (p) { removeMeshes(p); players.delete(conn.peer); showMsg(`${p.name} вышел`, 1200); broadcastPlayers(); }
+  };
+  conn.on('close', gone);
+  conn.on('error', gone);
+}
+function hostHandle(conn, d) {
+  if (!d || typeof d !== 'object') return;
+  if (d.t === 'hello') {
+    if (players.size >= PALETTE.length) { conn.send({ t: 'full' }); setTimeout(() => conn.close(), 300); return; }
+    const name = String(d.name || 'Игрок').slice(0, 14);
+    guestConns.set(conn.peer, conn);
+    upsertPlayer({ id: conn.peer, name, color: freeColor(), score: 0 });
+    conn.send({ t: 'welcome', you: conn.peer, code: roomCode, list: playerList(), round: roundSnapshot() });
+    broadcastPlayers();
+    if (state !== 'menu') showMsg(`${name} в игре!`, 1200);
+  } else if (d.t === 'pos' && Array.isArray(d.s)) {
+    setRemoteState(conn.peer, d.s);
+  } else if (d.t === 'pick') {
+    claimCoin(d.c, conn.peer);
+  }
+}
+function claimCoin(c, pid) {
+  if (!round || round.phase !== 'play' || !(c >= 0 && c < round.owners.length) || round.owners[c] != null) return;
+  const p = players.get(pid);
+  if (!p) return;
+  p.score++;
+  applyCoin(c, pid);
+  broadcast({ t: 'coin', c, by: pid });
+  broadcastPlayers();
+}
+function hostStartRound() {
+  const size = parseInt($('sizeSel').value, 10);
+  const seconds = parseInt($('timeSel').value, 10);
+  const seed = Math.floor(Math.random() * 1e9);
+  const coinCount = generateMaze(size, seed, true).cells.filter((c) => c.coin).length;
+  for (const p of players.values()) p.score = 0;
+  const snap = { phase: 'play', seed, size, owners: new Array(coinCount).fill(null), startIn: 3000, timeLeft: 3000 + seconds * 1000 };
+  broadcast({ t: 'round', round: snap });
+  broadcastPlayers();
+  startRoundLocal(snap);
+}
+function endRound() {
+  const results = sortedPlayers().map((p) => ({ name: p.name, color: p.color, score: p.score }));
+  round.phase = 'over';
+  round.results = results;
+  broadcast({ t: 'over', results });
+  showLobby(results);
+}
+
+// Guest side
+function sendToHost(msg) {
+  if (hostConn && hostConn.open) { try { hostConn.send(msg); } catch (e) { /* ignore */ } }
+}
+function joinRoom(code, name) {
+  if (!peerAvailable()) return;
+  mode = 'guest';
+  clearPlayers();
+  roomCode = code;
+  $('menuErr').textContent = 'Подключаюсь…';
+  let welcomed = false;
+  joinTimeout = setTimeout(() => { if (!welcomed) leaveNet('Не удалось подключиться к комнате ' + code); }, 15000);
+  peer = new Peer();
+  peer.on('open', (id) => {
+    myId = id;
+    hostConn = peer.connect(PEER_PREFIX + code, { reliable: true });
+    hostConn.on('open', () => hostConn.send({ t: 'hello', name }));
+    hostConn.on('data', (d) => {
+      if (d && d.t === 'welcome') { welcomed = true; clearTimeout(joinTimeout); $('menuErr').textContent = ''; }
+      guestHandle(d);
+    });
+    hostConn.on('close', () => { if (mode === 'guest') leaveNet('Связь с создателем комнаты потеряна'); });
+  });
+  peer.on('error', (err) => {
+    if (mode !== 'guest') return;
+    if (err.type === 'peer-unavailable') leaveNet(`Комната ${code} не найдена`);
+    else leaveNet('Ошибка сети: ' + err.type);
+  });
+}
+function guestHandle(d) {
+  if (!d || typeof d !== 'object') return;
+  switch (d.t) {
+    case 'welcome':
+      myId = d.you;
+      roomCode = d.code;
+      syncPlayers(d.list);
+      startNetLoop();
+      if (d.round.phase === 'play') startRoundLocal(d.round);
+      else showLobby(d.round.phase === 'over' ? d.round.results : null);
+      break;
+    case 'players': syncPlayers(d.list); break;
+    case 'round': startRoundLocal(d.round); break;
+    case 'coin': applyCoin(d.c, d.by); break;
+    case 'state': for (const id in d.all) setRemoteState(id, d.all[id]); break;
+    case 'over':
+      if (round) { round.phase = 'over'; round.results = d.results; }
+      showLobby(d.results);
+      break;
+    case 'full': leaveNet('Комната заполнена (максимум 8 игроков)'); break;
+  }
+}
+
+// ---------- Buttons ----------
+$('soloBtn').addEventListener('click', () => {
+  enableSensors();
+  getName();
+  mode = 'solo';
+  needCalib = true;
+  showPanel(null);
   respawn();
 });
-
 $('resetProgressBtn').addEventListener('click', () => {
   loadLevel(1);
-  state = 'menu';
   saveLevel();
-  $('startBtn').textContent = 'Старт';
-  $('resetProgressBtn').style.display = 'none';
+  showMenu();
+});
+$('hostBtn').addEventListener('click', () => {
+  enableSensors();
+  const name = getName();
+  if (!name) { $('menuErr').textContent = 'Введи имя'; return; }
+  startHosting(name);
+});
+$('joinBtn').addEventListener('click', () => {
+  enableSensors();
+  const name = getName();
+  const code = $('codeInput').value.trim().toUpperCase();
+  if (!name) { $('menuErr').textContent = 'Введи имя'; return; }
+  if (code.length < 4) { $('menuErr').textContent = 'Введи код комнаты'; return; }
+  joinRoom(code, name);
+});
+$('startRoundBtn').addEventListener('click', () => { if (mode === 'host') hostStartRound(); });
+$('leaveBtn').addEventListener('click', () => leaveNet());
+$('shareBtn').addEventListener('click', async () => {
+  const url = roomLink();
+  try {
+    if (navigator.share) await navigator.share({ title: 'Шарик', text: `Заходи в игру! Код ${roomCode}`, url });
+    else { await navigator.clipboard.writeText(url); showMsg('Ссылка скопирована', 1200); }
+  } catch (e) { /* share sheet closed */ }
 });
 
 $('calibBtn').addEventListener('click', () => { needCalib = true; showMsg('Калибровка ✔', 800); });
-$('restartBtn').addEventListener('click', () => { if (state === 'play' || state === 'dead') loadLevel(level); });
+$('restartBtn').addEventListener('click', () => {
+  if (state !== 'play' && state !== 'dead') return;
+  if (mode === 'solo') loadLevel(level);
+  else { lastCell = maze.start; respawn(); }
+});
 
 addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;
@@ -902,13 +1440,18 @@ addEventListener('resize', () => {
   if (bounds) setupMinimap();
 });
 
-// Initial level behind the start screen
-loadLevel(loadSavedLevel());
-state = 'menu';
-if (level > 1) {
-  $('startBtn').textContent = `Продолжить (уровень ${level})`;
-  $('resetProgressBtn').style.display = 'block';
+// Debug hook for automated tests (only with ?debug in the URL)
+if (new URLSearchParams(location.search).has('debug')) window.__game = { pos, vel, get coins() { return coins; } };
+
+// Initial screen: solo level in the background, invite link pre-fills the room code
+try { $('nameInput').value = localStorage.getItem('ballName') || ''; } catch (e) { /* ignore */ }
+const inviteCode = new URLSearchParams(location.search).get('room');
+if (inviteCode) {
+  $('codeInput').value = inviteCode.toUpperCase().slice(0, 5);
+  $('joinBtn').textContent = 'Войти в комнату';
 }
+loadLevel(loadSavedLevel());
+showMenu();
 requestAnimationFrame(frame);
 </script>
 </body>
