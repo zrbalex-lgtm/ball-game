@@ -48,7 +48,8 @@
   .score { margin-left: auto; font-weight: 800; }
   #board { position: fixed; left: 16px; top: calc(env(safe-area-inset-top, 0px) + 58px); pointer-events: none;
     font-size: 16px; font-weight: 700; text-shadow: 0 1px 3px #000; background: rgba(10,12,24,.45);
-    border-radius: 10px; padding: 6px 10px; min-width: 140px; }
+    border-radius: 10px; padding: 6px 10px; min-width: 200px; }
+  #board .score { margin-left: auto; padding-left: 12px; font-weight: 600; }
   #board div { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
   label { font-size: 16px; display: flex; flex-direction: column; gap: 4px; align-items: stretch; }
 </style>
@@ -136,6 +137,8 @@ const JUMP_V = 10;           // vertical speed from a jump pad
 const JUMP_H = 6.5;          // horizontal speed from a jump pad (towards the gap)
 const KILL_Y = -10;          // safety net if the ball falls out of the world
 const SUBSTEPS = 4;
+const DEATH_PENALTY = 1;     // points lost per death in multiplayer (score = coins - deaths * penalty)
+const LANDING_BRAKE = 0.7;   // horizontal speed kept when landing after a jump pad
 
 // Maze geometry
 const CELL = 7;              // distance between platform centers
@@ -505,17 +508,40 @@ function generateMaze(L, seed, mp = false) {
     hasGap: false,
   }));
 
-  // Edge types; no jump pads next to start or finish so they never overlap the spawn or finish pad
+  // Edge types: bridges first, jump gaps are picked in a second pass
   const edges = [];
+  const edgeOf = new Map();
+  const ekey = (a, b) => (a < b ? `${a},${b}` : `${b},${a}`);
   for (let a = 0; a < N; a++) for (const b of adj[a]) if (a < b) {
     let type = 'normal';
     const r = rng();
-    const nearSpecial = [a, b].some((c) => c === start || c === finish);
-    if (r < D.pGap && !nearSpecial) type = 'gap';
-    else if (r < D.pGap + D.pNarrow) type = 'narrow';
-    else if (r < D.pGap + D.pNarrow + D.pLavaSide) type = 'lavaSide';
-    edges.push({ a, b, type, side: rng() < 0.5 ? 1 : -1 });
-    if (type === 'gap') { cells[a].hasGap = true; cells[b].hasGap = true; }
+    if (r < D.pNarrow) type = 'narrow';
+    else if (r < D.pNarrow + D.pLavaSide) type = 'lavaSide';
+    const e = { a, b, type, side: rng() < 0.5 ? 1 : -1, locked: false };
+    edges.push(e);
+    edgeOf.set(ekey(a, b), e);
+  }
+
+  // A gap is allowed only in the middle of a straight line: a bridge leads onto the pad
+  // and another bridge continues straight on from the landing platform, so momentum
+  // after the jump carries the ball along a path instead of off the edge.
+  // No gaps next to start or finish so pads never overlap the spawn or finish pad.
+  const cellAt = (col, row) => (col >= 0 && col < cols && row >= 0 && row < rows ? row * cols + col : -1);
+  for (const e of edges) {
+    if (e.locked || rng() >= D.pGap * 1.6) continue;
+    const { a, b } = e;
+    if ([a, b].some((c) => c === start || c === finish)) continue;
+    const dc = (b % cols) - (a % cols), dr = Math.floor(b / cols) - Math.floor(a / cols);
+    const before = cellAt((a % cols) - dc, Math.floor(a / cols) - dr);
+    const after = cellAt((b % cols) + dc, Math.floor(b / cols) + dr);
+    const inE = before >= 0 ? edgeOf.get(ekey(before, a)) : null;
+    const outE = after >= 0 ? edgeOf.get(ekey(b, after)) : null;
+    if (!inE || !outE || inE.type === 'gap' || outE.type === 'gap') continue;
+    e.type = 'gap';
+    e.locked = true;
+    for (const x of [inE, outE]) { x.type = 'normal'; x.locked = true; }
+    cells[a].hasGap = true;
+    cells[b].hasGap = true;
   }
 
   // Coins go into dead ends, the deepest ones first
@@ -648,11 +674,11 @@ let hudText = '';
 function updateHud() {
   let t;
   if (mode === 'solo') {
-    t = `Ур. ${level} · 🪙 ${collected}/${coins.length}`;
+    t = `Ур. ${level} · 🪙 ${collected}/${coins.length} · 💀 ${deaths}`;
   } else if (round) {
     const left = Math.max(0, Math.ceil((round.endAt - performance.now()) / 1000));
     const free = round.owners.filter((o) => o == null).length;
-    t = `⏱ ${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')} · 🪙 осталось ${free}`;
+    t = `⏱ ${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')} · 🪙 осталось ${free} · 💀 ${deaths}`;
   } else {
     t = 'Комната ' + roomCode;
   }
@@ -786,6 +812,8 @@ let jumpCooldown = 0;
 let state = 'menu';       // menu | countdown | play | dead | transition
 let lastCell = 0;
 let collected = 0;
+let deaths = 0;            // own deaths in the current level / round
+let padFlight = false;     // true while flying after a jump pad
 const baseSeed = Math.floor(Math.random() * 1e9);
 
 // Network state (see the Network section below)
@@ -830,6 +858,7 @@ function loadLevel(n) {
   maze = generateMaze(level, baseSeed + level * 7919);
   buildLevel(maze);
   collected = 0;
+  deaths = 0;
   lastCell = maze.start;
   updateHud();
   respawn();
@@ -838,6 +867,11 @@ function loadLevel(n) {
 function die(text) {
   if (state !== 'play') return;
   state = 'dead';
+  padFlight = false;
+  deaths++;
+  if (mode === 'host') addDeath(myId);
+  else if (mode === 'guest') sendToHost({ t: 'death' });
+  updateHud();
   showMsg(text, 900);
   setTimeout(() => { if (state === 'dead') respawn(); }, 900);
 }
@@ -927,6 +961,11 @@ function physicsStep(dt, inp) {
   if (!grounded) return;
 
   if (groundBox.t === 'floor') lastCell = groundBox.cell;
+  if (padFlight && groundBox.t !== 'jump') {
+    // Soften the landing so the ball rolls onto the next bridge instead of flying off
+    padFlight = false;
+    vel.x *= LANDING_BRAKE; vel.z *= LANDING_BRAKE;
+  }
 
   // A pad fires only when the ball moves towards the gap, so landing on the far pad is safe
   if (groundBox.t === 'jump' && jumpCooldown <= 0) {
@@ -935,6 +974,7 @@ function physicsStep(dt, inp) {
       vel.set(d.x * JUMP_H, JUMP_V, d.z * JUMP_H);
       jumpCooldown = 0.4;
       grounded = false;
+      padFlight = true;
     }
   }
   if (groundBox && groundBox.t === 'finish') reachFinish();
@@ -1066,16 +1106,18 @@ function getName() {
 const esc = (s) => String(s).replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
 const roomLink = () => `${location.origin}${location.pathname}?room=${roomCode}`;
 
+const points = (p) => p.score - DEATH_PENALTY * (p.deaths || 0);
 function sortedPlayers() {
-  return [...players.values()].sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
+  return [...players.values()].sort((a, b) => points(b) - points(a) || b.score - a.score || a.name.localeCompare(b.name));
 }
+const scoreLine = (p) => `🪙${p.score} 💀${p.deaths || 0} = <b>${points(p)}</b>`;
 function renderPlayers() {
   const rows = sortedPlayers().map((p) =>
     `<li><span class="dot" style="background:${p.color}"></span>${esc(p.name)}${p.id === myId ? ' (ты)' : ''}` +
-    (round ? `<span class="score">${p.score} 🪙</span>` : '') + '</li>');
+    (round ? `<span class="score">${scoreLine(p)}</span>` : '') + '</li>');
   $('playerList').innerHTML = rows.join('');
   $('board').innerHTML = sortedPlayers().map((p) =>
-    `<div><span class="dot" style="background:${p.color}"></span>${esc(p.name)}<span class="score">${p.score}</span></div>`).join('');
+    `<div><span class="dot" style="background:${p.color}"></span>${esc(p.name)}<span class="score">${scoreLine(p)}</span></div>`).join('');
 }
 function showLobby(results) {
   state = 'menu';
@@ -1086,12 +1128,13 @@ function showLobby(results) {
   $('startRoundBtn').textContent = results ? 'Ещё раунд' : 'Начать раунд';
   $('resultsBlock').classList.toggle('hidden', !results);
   if (results) {
-    const best = results.length ? results[0].score : 0;
-    const winners = results.filter((r) => r.score === best);
-    $('winnerTitle').textContent = best === 0 ? 'Никто не собрал монет' :
+    const best = results.length ? points(results[0]) : 0;
+    const winners = results.filter((r) => points(r) === best);
+    const anyCoins = results.some((r) => r.score > 0);
+    $('winnerTitle').textContent = !anyCoins ? 'Никто не собрал монет' :
       winners.length > 1 ? `Ничья! 🤝 ${winners.map((w) => w.name).join(', ')}` : `🏆 ${winners[0].name}`;
     $('resultsList').innerHTML = results.map((r, i) =>
-      `<li>${i + 1}. <span class="dot" style="background:${r.color}"></span>${esc(r.name)}<span class="score">${r.score} 🪙</span></li>`).join('');
+      `<li>${i + 1}. <span class="dot" style="background:${r.color}"></span>${esc(r.name)}<span class="score">${scoreLine(r)}</span></li>`).join('');
   }
   $('board').classList.add('hidden');
   renderPlayers();
@@ -1106,7 +1149,7 @@ function upsertPlayer(info) {
     players.set(info.id, p);
   }
   const changed = p.name !== info.name || p.color !== info.color;
-  p.name = info.name; p.color = info.color; p.score = info.score || 0;
+  p.name = info.name; p.color = info.color; p.score = info.score || 0; p.deaths = info.deaths || 0;
   if (info.id !== myId && (changed || !p.mesh)) {
     removeMeshes(p);
     p.mesh = new THREE.Mesh(ballGeo, ballMaterial(p.color));
@@ -1173,6 +1216,8 @@ function startRoundLocal(r) {
   buildLevel(maze);
   round.owners.forEach((o, i) => { if (o != null && coins[i]) coins[i].visible = false; });
   for (const p of players.values()) p.hasPos = false;
+  const me = players.get(myId);
+  deaths = me ? me.deaths || 0 : 0;
   lastCell = maze.start;
   respawn();
   countdownShown = 0;
@@ -1241,7 +1286,7 @@ function startNetLoop() {
 
 // Host side
 function playerList() {
-  return [...players.values()].map((p) => ({ id: p.id, name: p.name, color: p.color, score: p.score }));
+  return [...players.values()].map((p) => ({ id: p.id, name: p.name, color: p.color, score: p.score, deaths: p.deaths || 0 }));
 }
 function broadcast(msg) {
   for (const c of guestConns.values()) if (c.open) { try { c.send(msg); } catch (e) { /* ignore */ } }
@@ -1306,6 +1351,8 @@ function hostHandle(conn, d) {
     setRemoteState(conn.peer, d.s);
   } else if (d.t === 'pick') {
     claimCoin(d.c, conn.peer);
+  } else if (d.t === 'death') {
+    addDeath(conn.peer);
   }
 }
 function claimCoin(c, pid) {
@@ -1317,19 +1364,26 @@ function claimCoin(c, pid) {
   broadcast({ t: 'coin', c, by: pid });
   broadcastPlayers();
 }
+function addDeath(pid) {
+  if (!round || round.phase !== 'play') return;
+  const p = players.get(pid);
+  if (!p) return;
+  p.deaths = (p.deaths || 0) + 1;
+  broadcastPlayers();
+}
 function hostStartRound() {
   const size = parseInt($('sizeSel').value, 10);
   const seconds = parseInt($('timeSel').value, 10);
   const seed = Math.floor(Math.random() * 1e9);
   const coinCount = generateMaze(size, seed, true).cells.filter((c) => c.coin).length;
-  for (const p of players.values()) p.score = 0;
+  for (const p of players.values()) { p.score = 0; p.deaths = 0; }
   const snap = { phase: 'play', seed, size, owners: new Array(coinCount).fill(null), startIn: 3000, timeLeft: 3000 + seconds * 1000 };
   broadcast({ t: 'round', round: snap });
   broadcastPlayers();
   startRoundLocal(snap);
 }
 function endRound() {
-  const results = sortedPlayers().map((p) => ({ name: p.name, color: p.color, score: p.score }));
+  const results = sortedPlayers().map((p) => ({ name: p.name, color: p.color, score: p.score, deaths: p.deaths || 0 }));
   round.phase = 'over';
   round.results = results;
   broadcast({ t: 'over', results });
