@@ -1,0 +1,52 @@
+name: Perplexus Pages Preview
+
+on:
+  push:
+    branches: [feature/perplexus]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: perplexus-pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install prototype dependencies
+        working-directory: perplexus
+        run: npm install --no-audit --no-fund
+      - name: Run geometry tests
+        working-directory: perplexus
+        run: npm test
+      - name: Build prototype
+        working-directory: perplexus
+        run: npm run build
+      - name: Assemble site, preserving original game
+        run: |
+          mkdir -p _site/perplexus
+          rsync -a --exclude='.git' --exclude='.github' --exclude='perplexus' --exclude='_site' ./ _site/
+          cp -a perplexus/dist/. _site/perplexus/
+          touch _site/.nojekyll
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}perplexus/
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
