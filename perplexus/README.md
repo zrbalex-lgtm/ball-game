@@ -44,3 +44,8 @@ The test track is straight rather than a complete Perplexus level. Curves, ramps
 ## Next iteration
 
 Implement actual curved and vertical track primitives, design a physically traversable rotation-dependent level, separate physics/rotation/camera modules, add test harnesses, validate a full playthrough and only then label it MVP.
+
+
+## GitHub Pages preview
+
+The isolated preview workflow publishes the original repository root plus the built prototype at `/ball-game/perplexus/`. The repository Pages source must be set to **GitHub Actions**. Publishing is independent of merging the draft pull request.
