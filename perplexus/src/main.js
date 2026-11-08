@@ -6,7 +6,7 @@ import './style.css';
 
 await RAPIER.init();
 const app=document.querySelector('#app');
-app.innerHTML=`<div id="hud"><strong>PERPLEXUS <small>3D marble maze · early access</small></strong><span id="status">Ready</span><button id="start">Start / Restart</button><button id="calibrate">Calibrate</button><button id="pause">Pause</button><select id="camera"><option value="overview">Overview</option><option value="follow">Follow</option><option value="free">Free inspection</option></select><button id="resetCamera">Reset camera</button><label>Sensitivity <input id="sensitivity" type="range" min=".3" max="2" step=".1" value="1"></label></div><div id="rotations"><button data-axis="x" data-sign="1">X +90°</button><button data-axis="x" data-sign="-1">X -90°</button><button data-axis="z" data-sign="1">Z +90°</button><button data-axis="z" data-sign="-1">Z -90°</button></div><div id="help">Tilt device or use WASD / arrows. Drag to orbit. R to respawn. Rotate only while the marble is supported.</div>`;
+app.innerHTML=`<div id="hud"><strong>PERPLEXUS <small>3D marble maze · early access</small></strong><span id="status">Ready</span><button id="start">Start / Restart</button><button id="calibrate">Calibrate</button><button id="pause">Pause</button><select id="camera"><option value="overview">Overview</option><option value="follow">Follow</option><option value="free">Free inspection</option></select><button id="resetCamera">Reset camera</button><label>Sensitivity <input id="sensitivity" type="range" min=".3" max="2" step=".1" value="1"></label></div><div id="rotations"><button data-axis="x" data-sign="1">X +90°</button><button data-axis="x" data-sign="-1">X -90°</button><button data-axis="z" data-sign="1">Z +90°</button><button data-axis="z" data-sign="-1">Z -90°</button></div><div id="help">Tilt device or use WASD / arrows. Drag to orbit. R to respawn. Rotate only while the marble is supported.</div><div id="joystick" aria-label="Touch steering pad"><div id="joystick-knob"></div></div>`;
 const renderer=new THREE.WebGLRenderer({antialias:true,powerPreference:'high-performance'});renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.setSize(innerWidth,innerHeight);app.prepend(renderer.domElement);
 const scene=new THREE.Scene();scene.background=new THREE.Color('#101827');
 scene.add(new THREE.HemisphereLight(0xffffff,0x455677,2.1));
@@ -44,7 +44,14 @@ const originMarker=new THREE.Mesh(new THREE.CylinderGeometry(.25,.25,.04,24),new
 for(const [i,p] of [...level.checkpoints,level.finish].entries()){
  const m=new THREE.Mesh(new THREE.TorusGeometry(.27,.045,8,20),new THREE.MeshBasicMaterial({color:i===level.checkpoints.length?0x66f6a2:0xffd064}));m.position.set(...p);m.rotation.x=Math.PI/2;maze.add(m);markers.push(m);
 }
-const input=new TiltInput();let started=false,paused=false,checkpoint=null,rotation=null,mazeQ=new THREE.Quaternion(),cameraMode='overview',yaw=.6,pitch=.45,previousMode='overview',pointer=null,elapsed=0;
+const input=new TiltInput();
+const joystick=document.querySelector('#joystick'),knob=document.querySelector('#joystick-knob');
+let joystickPointer=null;
+function steerTouch(e){const b=joystick.getBoundingClientRect(),cx=b.left+b.width/2,cy=b.top+b.height/2,range=b.width*.38;const dx=e.clientX-cx,dy=e.clientY-cy,m=Math.max(1,Math.hypot(dx,dy)/range);const x=dx/range/m,z=dy/range/m;knob.style.transform=`translate(${x*range}px,${z*range}px)`;input.setTouch(x,z)}
+joystick.addEventListener('pointerdown',e=>{e.preventDefault();joystickPointer=e.pointerId;joystick.setPointerCapture(e.pointerId);steerTouch(e)});
+joystick.addEventListener('pointermove',e=>{if(e.pointerId===joystickPointer)steerTouch(e)});
+function releaseTouch(e){if(e.pointerId!==joystickPointer)return;joystickPointer=null;input.clearTouch();knob.style.transform='translate(0,0)'}
+joystick.addEventListener('pointerup',releaseTouch);joystick.addEventListener('pointercancel',releaseTouch);let started=false,paused=false,checkpoint=null,rotation=null,mazeQ=new THREE.Quaternion(),cameraMode='overview',yaw=.6,pitch=.45,previousMode='overview',pointer=null,elapsed=0;
 const status=document.querySelector('#status');
 function respawn(){const p=new THREE.Vector3(...(checkpoint??level.start)).applyQuaternion(mazeQ);ball.setTranslation({x:p.x,y:p.y,z:p.z},true);ball.setLinvel({x:0,y:0,z:0},true);ball.setAngvel({x:0,y:0,z:0},true)}
 function reset(){checkpoint=null;mazeQ.identity();maze.quaternion.identity();rotation=null;elapsed=0;respawn();started=true;paused=false;status.textContent='Playing'}
