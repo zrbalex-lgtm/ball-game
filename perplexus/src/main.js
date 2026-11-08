@@ -6,14 +6,18 @@ import './style.css';
 
 await RAPIER.init();
 const app=document.querySelector('#app');
-app.innerHTML=`<div id="hud"><strong>PERPLEXUS <small>experimental physics prototype</small></strong><span id="status">Ready</span><button id="start">Start / Restart</button><button id="calibrate">Calibrate</button><button id="pause">Pause</button><select id="camera"><option value="overview">Overview</option><option value="follow">Follow</option><option value="free">Free inspection</option></select><button id="resetCamera">Reset camera</button><label>Sensitivity <input id="sensitivity" type="range" min=".3" max="2" step=".1" value="1"></label></div><div id="rotations"><button data-axis="x" data-sign="1">X +90°</button><button data-axis="x" data-sign="-1">X -90°</button><button data-axis="z" data-sign="1">Z +90°</button><button data-axis="z" data-sign="-1">Z -90°</button></div><div id="help">Tilt device or use WASD / arrows. Drag to orbit. R to respawn. Rotate only while the marble is supported.</div>`;
+app.innerHTML=`<div id="hud"><strong>PERPLEXUS <small>3D marble maze · early access</small></strong><span id="status">Ready</span><button id="start">Start / Restart</button><button id="calibrate">Calibrate</button><button id="pause">Pause</button><select id="camera"><option value="overview">Overview</option><option value="follow">Follow</option><option value="free">Free inspection</option></select><button id="resetCamera">Reset camera</button><label>Sensitivity <input id="sensitivity" type="range" min=".3" max="2" step=".1" value="1"></label></div><div id="rotations"><button data-axis="x" data-sign="1">X +90°</button><button data-axis="x" data-sign="-1">X -90°</button><button data-axis="z" data-sign="1">Z +90°</button><button data-axis="z" data-sign="-1">Z -90°</button></div><div id="help">Tilt device or use WASD / arrows. Drag to orbit. R to respawn. Rotate only while the marble is supported.</div>`;
 const renderer=new THREE.WebGLRenderer({antialias:true,powerPreference:'high-performance'});renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.setSize(innerWidth,innerHeight);app.prepend(renderer.domElement);
 const scene=new THREE.Scene();scene.background=new THREE.Color('#101827');
 scene.add(new THREE.HemisphereLight(0xffffff,0x455677,2.1));
 const light=new THREE.DirectionalLight(0xffffff,2.4);light.position.set(5,10,7);scene.add(light);
 const camera=new THREE.PerspectiveCamera(55,innerWidth/innerHeight,.05,100);
 const maze=new THREE.Group();scene.add(maze);
+const starfield=new THREE.Group();scene.add(starfield);
+for(let i=0;i<150;i++){const a=i*2.399963,b=Math.acos(1-2*(i+.5)/150),r=22;const dot=new THREE.Mesh(new THREE.SphereGeometry(.018,4,4),new THREE.MeshBasicMaterial({color:0x8199c0}));dot.position.set(r*Math.sin(b)*Math.cos(a),r*Math.cos(b),r*Math.sin(b)*Math.sin(a));starfield.add(dot);}
 const shell=new THREE.Mesh(new THREE.SphereGeometry(5.2,32,20),new THREE.MeshPhysicalMaterial({color:0x90b8df,transparent:true,opacity:.085,side:THREE.BackSide,depthWrite:false}));maze.add(shell);
+const shellRim=new THREE.Mesh(new THREE.SphereGeometry(5.2,48,32),new THREE.MeshBasicMaterial({color:0x6c9fca,wireframe:true,transparent:true,opacity:.045,depthWrite:false}));maze.add(shellRim);
+const equator=new THREE.Mesh(new THREE.TorusGeometry(5.19,.025,6,100),new THREE.MeshBasicMaterial({color:0x679abf,transparent:true,opacity:.28}));equator.rotation.x=Math.PI/2;maze.add(equator);
 const world=new RAPIER.World({x:0,y:-9.81,z:0});
 const tracks=[];
 const qtmp=new THREE.Quaternion(),vtmp=new THREE.Vector3(),center=new THREE.Vector3();
@@ -21,6 +25,12 @@ for(const t of level.tracks){
  const a=new THREE.Vector3(...t.from),b=new THREE.Vector3(...t.to);const delta=b.clone().sub(a),length=delta.length();
  const mesh=new THREE.Mesh(new THREE.BoxGeometry(length,.18,t.width),new THREE.MeshStandardMaterial({color:t.color,roughness:.45}));
  mesh.position.copy(a).add(b).multiplyScalar(.5);mesh.quaternion.setFromUnitVectors(new THREE.Vector3(1,0,0),delta.normalize());maze.add(mesh);
+ // Narrow edge rails are visual guides; open gaps remain dangerous.
+ const railMaterial=new THREE.MeshStandardMaterial({color:0xe8f1f9,metalness:.3,roughness:.38,transparent:true,opacity:.8});
+ for(const side of [-1,1]){
+  const rail=new THREE.Mesh(new THREE.BoxGeometry(length,.14,.045),railMaterial);
+  rail.position.set(0,.16,side*(t.width/2-.025));mesh.add(rail);
+ }
  const body=world.createRigidBody(RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(mesh.position.x,mesh.position.y,mesh.position.z).setRotation(mesh.quaternion));
  world.createCollider(RAPIER.ColliderDesc.cuboid(length/2,.09,t.width/2).setFriction(1.2),body);
  tracks.push({mesh,body,localPos:mesh.position.clone(),localQ:mesh.quaternion.clone()});
@@ -30,6 +40,7 @@ const marbleMesh=new THREE.Mesh(new THREE.SphereGeometry(radius,24,16),new THREE
 const ball=world.createRigidBody(RAPIER.RigidBodyDesc.dynamic().setTranslation(...level.start).setCcdEnabled(true).setLinearDamping(.35).setAngularDamping(.3));
 world.createCollider(RAPIER.ColliderDesc.ball(radius).setFriction(1.4).setRestitution(0),ball);
 const markers=[];
+const originMarker=new THREE.Mesh(new THREE.CylinderGeometry(.25,.25,.04,24),new THREE.MeshStandardMaterial({color:0x4b9ded,emissive:0x123a6e}));originMarker.position.set(level.start[0],level.start[1]-.2,level.start[2]);maze.add(originMarker);
 for(const [i,p] of [...level.checkpoints,level.finish].entries()){
  const m=new THREE.Mesh(new THREE.TorusGeometry(.27,.045,8,20),new THREE.MeshBasicMaterial({color:i===level.checkpoints.length?0x66f6a2:0xffd064}));m.position.set(...p);m.rotation.x=Math.PI/2;maze.add(m);markers.push(m);
 }
